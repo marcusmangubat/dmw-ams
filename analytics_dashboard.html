@@ -1,0 +1,1544 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Analytics — DMW RO IV-A</title>
+    <link
+        href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700&family=DM+Serif+Display&display=swap"
+        rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        :root {
+            --navy: #0b1f4b;
+            --navy2: #162d6a;
+            --blue: #1d4ed8;
+            --blue-lt: #3b82f6;
+            --surface: #f0f4f9;
+            --card: #ffffff;
+            --border: #e4e9f2;
+            --text1: #0b1f4b;
+            --text2: #4a5568;
+            --text3: #94a3b8;
+            --green: #059669;
+            --amber: #d97706;
+            --indigo: #4f46e5;
+            --red: #dc2626;
+            --orange: #f97316;
+            --dock-h: 72px;
+        }
+
+        *,
+        *::before,
+        *::after {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        html {
+            -webkit-text-size-adjust: 100%;
+        }
+
+        body {
+            font-family: 'DM Sans', sans-serif;
+            background: var(--surface);
+            color: var(--text1);
+            min-height: 100vh;
+            padding-bottom: calc(var(--dock-h) + 28px);
+        }
+
+        /* TOPBAR */
+        .topbar {
+            background: var(--navy);
+            height: 56px;
+            padding: 0 16px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            position: sticky;
+            top: 0;
+            z-index: 80;
+            box-shadow: 0 2px 20px rgba(11, 31, 75, .25);
+        }
+
+        .topbar-brand {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            min-width: 0;
+        }
+
+        .topbar-brand img {
+            height: 28px;
+            flex-shrink: 0;
+            filter: brightness(0) invert(1);
+            opacity: .9;
+        }
+
+        .brand-divider {
+            width: 1px;
+            height: 24px;
+            background: rgba(255, 255, 255, .15);
+            flex-shrink: 0;
+        }
+
+        .brand-text h1 {
+            font-family: 'DM Serif Display', serif;
+            font-size: 13px;
+            color: #fff;
+            line-height: 1.1;
+            white-space: nowrap;
+        }
+
+        .brand-text p {
+            font-size: 9.5px;
+            color: rgba(255, 255, 255, .4);
+            font-weight: 600;
+            letter-spacing: .04em;
+            white-space: nowrap;
+        }
+
+        .topbar-right {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            flex-shrink: 0;
+        }
+
+        .topbar-date {
+            font-size: 10px;
+            color: rgba(255, 255, 255, .38);
+            font-weight: 600;
+            letter-spacing: .04em;
+        }
+
+        .tb-btn {
+            width: 32px;
+            height: 32px;
+            border-radius: 9px;
+            background: rgba(255, 255, 255, .08);
+            border: 1px solid rgba(255, 255, 255, .1);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: rgba(255, 255, 255, .65);
+            font-size: 13px;
+            cursor: pointer;
+            position: relative;
+        }
+
+        .topbar-avatar {
+            width: 32px;
+            height: 32px;
+            border-radius: 9px;
+            background: rgba(255, 255, 255, .14);
+            border: 1px solid rgba(255, 255, 255, .2);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 11px;
+            font-weight: 800;
+            color: #fff;
+        }
+
+        /* SUBBAR */
+        .subbar {
+            background: #fff;
+            border-bottom: 1px solid var(--border);
+            padding: 12px 16px;
+        }
+
+        .subbar-inner {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            flex-wrap: wrap;
+            gap: 10px;
+        }
+
+        .subbar-greeting h2 {
+            font-family: 'DM Serif Display', serif;
+            font-size: 17px;
+            color: var(--navy);
+        }
+
+        .subbar-greeting p {
+            font-size: 11.5px;
+            color: var(--text3);
+            font-weight: 500;
+            margin-top: 2px;
+        }
+
+        .filter-scroll {
+            display: flex;
+            gap: 8px;
+            overflow-x: auto;
+            scrollbar-width: none;
+            -webkit-overflow-scrolling: touch;
+        }
+
+        .filter-scroll::-webkit-scrollbar {
+            display: none;
+        }
+
+        .filter-pill {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            padding: 6px 12px;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--text2);
+            cursor: pointer;
+            white-space: nowrap;
+            flex-shrink: 0;
+            font-family: 'DM Sans', sans-serif;
+        }
+
+        .filter-pill select {
+            background: none;
+            border: none;
+            outline: none;
+            font-family: inherit;
+            font-size: 12px;
+            font-weight: 600;
+            color: inherit;
+            cursor: pointer;
+        }
+
+        /* MAIN */
+        .main {
+            padding: 14px 14px 0;
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+
+        /* SECTION HEADERS */
+        .section-divider {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 10px;
+            font-weight: 800;
+            letter-spacing: .1em;
+            text-transform: uppercase;
+            color: var(--text3);
+            margin: 20px 0 10px;
+            padding-bottom: 8px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .section-label {
+            display: flex;
+            align-items: center;
+            gap: 7px;
+            font-size: 10px;
+            font-weight: 700;
+            letter-spacing: .07em;
+            text-transform: uppercase;
+            color: var(--text2);
+            margin-bottom: 10px;
+        }
+
+        /* KPI CARDS */
+        .kpi-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+            margin-bottom: 12px;
+        }
+
+        .kpi-card {
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 14px;
+            padding: 14px 16px;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .kpi-card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 3px;
+            border-radius: 14px 14px 0 0;
+        }
+
+        .kpi-card.c-blue::before {
+            background: var(--blue);
+        }
+
+        .kpi-card.c-amber::before {
+            background: var(--amber);
+        }
+
+        .kpi-card.c-indigo::before {
+            background: var(--indigo);
+        }
+
+        .kpi-card.c-green::before {
+            background: var(--green);
+        }
+
+        .kpi-top {
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            margin-bottom: 4px;
+        }
+
+        .kpi-icon {
+            width: 34px;
+            height: 34px;
+            border-radius: 9px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 14px;
+            flex-shrink: 0;
+        }
+
+        .kpi-icon.c-blue {
+            background: #eff6ff;
+            color: var(--blue-lt);
+        }
+
+        .kpi-icon.c-amber {
+            background: #fffbeb;
+            color: var(--amber);
+        }
+
+        .kpi-icon.c-indigo {
+            background: #eef2ff;
+            color: var(--indigo);
+        }
+
+        .kpi-icon.c-green {
+            background: #ecfdf5;
+            color: var(--green);
+        }
+
+        .kpi-label {
+            font-size: 9.5px;
+            font-weight: 700;
+            letter-spacing: .06em;
+            text-transform: uppercase;
+            color: var(--text3);
+            margin-bottom: 4px;
+        }
+
+        .kpi-value {
+            font-family: 'DM Serif Display', serif;
+            font-size: 28px;
+            line-height: 1;
+        }
+
+        .kpi-value.c-blue {
+            color: var(--navy);
+        }
+
+        .kpi-value.c-amber {
+            color: var(--amber);
+        }
+
+        .kpi-value.c-indigo {
+            color: var(--indigo);
+        }
+
+        .kpi-value.c-green {
+            color: var(--green);
+        }
+
+        .kpi-sub {
+            font-size: 10px;
+            color: var(--text3);
+            font-weight: 500;
+            margin-top: 4px;
+        }
+
+        .kpi-sub b {
+            color: var(--green);
+        }
+
+        /* GENERIC CARD */
+        .card {
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 14px;
+            padding: 16px;
+        }
+
+        .card-head {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 14px;
+        }
+
+        .card-title {
+            font-size: 10.5px;
+            font-weight: 700;
+            letter-spacing: .07em;
+            text-transform: uppercase;
+            color: var(--text2);
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .ctdot {
+            width: 7px;
+            height: 7px;
+            border-radius: 50%;
+            flex-shrink: 0;
+        }
+
+        .card-link {
+            font-size: 11px;
+            font-weight: 600;
+            color: var(--blue-lt);
+            text-decoration: none;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            opacity: .75;
+        }
+
+        /* GRID LAYOUTS */
+        .grid-3 {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            margin-bottom: 14px;
+        }
+
+        .grid-admin {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            margin-bottom: 24px;
+        }
+
+        /* STATUS / BAR ROWS */
+        .s-row {
+            display: flex;
+            align-items: center;
+            padding: 7px 0;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .s-row:last-child {
+            border-bottom: none;
+        }
+
+        .s-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            flex-shrink: 0;
+        }
+
+        .s-name {
+            font-size: 12.5px;
+            font-weight: 600;
+            color: var(--text1);
+            flex: 1;
+            margin-left: 9px;
+        }
+
+        .s-num {
+            font-size: 12.5px;
+            font-weight: 700;
+            margin-right: 10px;
+        }
+
+        .s-bar-wrap {
+            width: 56px;
+            height: 4px;
+            background: #f1f5f9;
+            border-radius: 99px;
+            overflow: hidden;
+        }
+
+        .s-bar-fill {
+            height: 100%;
+            border-radius: 99px;
+        }
+
+        /* STAGE BARS */
+        .stage-bar-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 10px;
+        }
+
+        .stage-bar-row:last-child {
+            margin-bottom: 0;
+        }
+
+        .stage-bar-lbl {
+            font-size: 11.5px;
+            font-weight: 600;
+            color: var(--text2);
+            width: 78px;
+            flex-shrink: 0;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .stage-bar-track {
+            flex: 1;
+            height: 7px;
+            background: #f1f5f9;
+            border-radius: 99px;
+            overflow: hidden;
+        }
+
+        .stage-bar-fill {
+            height: 100%;
+            border-radius: 99px;
+        }
+
+        .stage-bar-val {
+            font-size: 11px;
+            font-weight: 700;
+            color: var(--text3);
+            min-width: 26px;
+            text-align: right;
+        }
+
+        /* ALERTS */
+        .analytic-alert {
+            background: #fffbeb;
+            border: 1px solid #fde68a;
+            border-radius: 8px;
+            padding: 7px 10px;
+            font-size: 11px;
+            color: var(--text2);
+            display: flex;
+            align-items: center;
+            gap: 7px;
+            margin-top: 12px;
+        }
+
+        .analytic-alert b {
+            color: var(--amber);
+        }
+
+        .analytic-alert.danger {
+            background: #fef2f2;
+            border-color: #fecaca;
+        }
+
+        .analytic-alert.danger b {
+            color: var(--red);
+        }
+
+        /* OVERDUE */
+        .overdue-row {
+            display: flex;
+            justify-content: space-between;
+            padding: 5px 0;
+            border-bottom: 1px solid var(--border);
+            font-size: 11.5px;
+        }
+
+        .overdue-row:last-child {
+            border-bottom: none;
+        }
+
+        .overdue-name {
+            font-weight: 600;
+            color: var(--text1);
+        }
+
+        .overdue-days {
+            font-weight: 700;
+            font-size: 11px;
+        }
+
+        /* CHART LEGEND */
+        .chart-legend {
+            display: flex;
+            gap: 14px;
+            flex-wrap: wrap;
+            margin-top: 10px;
+        }
+
+        .leg-item {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            font-size: 10.5px;
+            font-weight: 600;
+            color: var(--text3);
+        }
+
+        .leg-sw {
+            width: 10px;
+            height: 10px;
+            border-radius: 3px;
+            flex-shrink: 0;
+        }
+
+        /* SVC TABS */
+        .svc-tab-row {
+            display: flex;
+            gap: 4px;
+        }
+
+        .svc-tab {
+            font-family: 'DM Sans', sans-serif;
+            font-size: 10px;
+            font-weight: 700;
+            padding: 3px 9px;
+            border-radius: 20px;
+            border: 1px solid var(--border);
+            background: transparent;
+            color: var(--text3);
+            cursor: pointer;
+            transition: all .2s;
+        }
+
+        .svc-tab.active {
+            background: #eff6ff;
+            border-color: #bfdbfe;
+            color: var(--blue);
+        }
+
+        /* PIE */
+        .pie-wrap {
+            display: flex;
+            flex-direction: column;
+            gap: 14px;
+        }
+
+        .pie-canvas-wrap {
+            display: flex;
+            justify-content: center;
+        }
+
+        .pie-canvas-wrap canvas {
+            max-width: 180px;
+        }
+
+        .p-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 5px 0;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .p-row:last-child {
+            border-bottom: none;
+        }
+
+        .p-sw {
+            width: 9px;
+            height: 9px;
+            border-radius: 3px;
+            flex-shrink: 0;
+        }
+
+        .p-lbl {
+            font-size: 11.5px;
+            font-weight: 600;
+            color: var(--text1);
+            flex: 1;
+        }
+
+        .p-pct {
+            font-size: 11px;
+            font-weight: 700;
+            color: var(--text3);
+        }
+
+        /* JOB ORDERS */
+        .job-item {
+            margin-bottom: 12px;
+        }
+
+        .job-item:last-child {
+            margin-bottom: 0;
+        }
+
+        .job-head {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 5px;
+        }
+
+        .job-name {
+            font-size: 12px;
+            font-weight: 700;
+            color: var(--text1);
+        }
+
+        .job-sub {
+            font-size: 10.5px;
+            color: var(--text3);
+            font-weight: 500;
+        }
+
+        .job-count {
+            font-size: 12px;
+            font-weight: 800;
+        }
+
+        .job-track {
+            height: 5px;
+            background: #f1f5f9;
+            border-radius: 99px;
+            overflow: hidden;
+        }
+
+        .job-fill {
+            height: 100%;
+            border-radius: 99px;
+        }
+
+        /* STAFF */
+        .staff-row {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 8px 0;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .staff-row:last-child {
+            border-bottom: none;
+        }
+
+        .staff-avatar {
+            width: 34px;
+            height: 34px;
+            border-radius: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 11px;
+            font-weight: 800;
+            flex-shrink: 0;
+        }
+
+        .staff-info {
+            flex: 1;
+            min-width: 0;
+        }
+
+        .staff-name {
+            font-size: 12.5px;
+            font-weight: 700;
+            color: var(--text1);
+        }
+
+        .staff-meta {
+            font-size: 10.5px;
+            color: var(--text3);
+            font-weight: 500;
+            margin-top: 1px;
+        }
+
+        .mini-bar-track {
+            height: 4px;
+            background: #f1f5f9;
+            border-radius: 99px;
+            margin-top: 5px;
+            overflow: hidden;
+        }
+
+        .mini-bar-fill {
+            height: 100%;
+            border-radius: 99px;
+        }
+
+        .staff-badge {
+            font-size: 10px;
+            font-weight: 700;
+            padding: 3px 9px;
+            border-radius: 20px;
+            flex-shrink: 0;
+            letter-spacing: .03em;
+        }
+
+        /* DOCK */
+        .dock-wrap {
+            position: fixed;
+            bottom: calc(14px + env(safe-area-inset-bottom));
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 200;
+            width: calc(100% - 24px);
+            max-width: 680px;
+            pointer-events: none;
+        }
+
+        .dock {
+            pointer-events: all;
+            background: var(--navy);
+            border: 1px solid rgba(255, 255, 255, .1);
+            border-radius: 20px;
+            padding: 8px 10px;
+            display: flex;
+            align-items: center;
+            justify-content: space-around;
+            gap: 2px;
+            box-shadow: 0 20px 60px rgba(11, 31, 75, .4), 0 4px 16px rgba(11, 31, 75, .25);
+        }
+
+        .dk {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 3px;
+            padding: 7px 10px;
+            border-radius: 13px;
+            cursor: pointer;
+            text-decoration: none;
+            position: relative;
+            flex: 1;
+            min-width: 0;
+        }
+
+        .dk i {
+            font-size: 16px;
+            color: rgba(255, 255, 255, .42);
+            line-height: 1;
+        }
+
+        .dk.active i {
+            color: #93c5fd;
+        }
+
+        .dk-lbl {
+            font-size: 8.5px;
+            font-weight: 700;
+            letter-spacing: .04em;
+            text-transform: uppercase;
+            color: rgba(255, 255, 255, .28);
+            line-height: 1;
+            white-space: nowrap;
+        }
+
+        .dk.active .dk-lbl {
+            color: #93c5fd;
+        }
+
+        .dk-div {
+            width: 1px;
+            height: 24px;
+            background: rgba(255, 255, 255, .09);
+            flex-shrink: 0;
+        }
+
+        /* ANIMATIONS */
+        .fade-in {
+            opacity: 0;
+            transform: translateY(10px);
+            animation: fi2 .4s ease forwards;
+        }
+
+        @keyframes fi2 {
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .d1 {
+            animation-delay: .05s;
+        }
+
+        .d2 {
+            animation-delay: .1s;
+        }
+
+        .d3 {
+            animation-delay: .15s;
+        }
+
+        .d4 {
+            animation-delay: .2s;
+        }
+
+        .d5 {
+            animation-delay: .25s;
+        }
+
+        .d6 {
+            animation-delay: .3s;
+        }
+
+        /* TABLET */
+        @media(min-width:640px) {
+            .kpi-grid {
+                grid-template-columns: repeat(4, 1fr);
+                gap: 12px;
+            }
+
+            .pie-wrap {
+                flex-direction: row;
+                align-items: center;
+            }
+
+            .pie-canvas-wrap canvas {
+                max-width: 160px;
+            }
+
+            .grid-3 {
+                display: grid;
+                grid-template-columns: 1fr 1fr;
+                gap: 12px;
+            }
+
+            .grid-admin {
+                display: grid;
+                grid-template-columns: 1fr 1fr;
+                gap: 12px;
+            }
+        }
+
+        /* DESKTOP */
+        @media(min-width:1024px) {
+            .topbar {
+                height: 60px;
+                padding: 0 32px;
+            }
+
+            .subbar {
+                padding: 12px 32px;
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+            }
+
+            .main {
+                padding: 22px 32px 0;
+            }
+
+            .kpi-grid {
+                gap: 14px;
+                margin-bottom: 16px;
+            }
+
+            .kpi-value {
+                font-size: 38px;
+            }
+
+            .grid-3 {
+                grid-template-columns: 1fr 1fr 1fr;
+                gap: 14px;
+                margin-bottom: 16px;
+            }
+
+            .grid-admin {
+                grid-template-columns: 2fr 1fr;
+                gap: 14px;
+                margin-bottom: 28px;
+            }
+
+            .card {
+                padding: 20px 22px;
+            }
+
+            .pie-wrap {
+                flex-direction: row;
+                gap: 16px;
+            }
+        }
+
+        @media(max-width:479px) {
+            .topbar-date {
+                display: none;
+            }
+
+            .brand-text p {
+                display: none;
+            }
+        }
+    </style>
+</head>
+
+<body>
+
+    <!-- TOPBAR -->
+    <header class="topbar">
+        <div class="topbar-brand">
+            <img src="https://dmw.gov.ph/images/dmw_tahanan_ng_ofw_colored.png" alt="DMW">
+            <div class="brand-divider"></div>
+            <div class="brand-text">
+                <h1>Department of Migrant Workers</h1>
+                <p>REGIONAL OFFICE IV-A &nbsp;–&nbsp; ADMIN PORTAL</p>
+            </div>
+        </div>
+        <div class="topbar-right">
+            <span class="topbar-date" id="live-date"></span>
+            <div class="tb-btn"><i class="fas fa-bell"></i></div>
+            <div class="topbar-avatar">AU</div>
+        </div>
+    </header>
+
+    <!-- SUBBAR -->
+    <div class="subbar">
+        <div class="subbar-inner">
+            <div class="subbar-greeting">
+                <h2 id="greeting-text">Good morning, Admin</h2>
+                <p>Analytics overview — migrant workers application management</p>
+            </div>
+            <div class="filter-scroll">
+                <label class="filter-pill">
+                    <i class="fas fa-calendar-alt" style="color:#3b82f6"></i>
+                    <select>
+                        <option>March 2026</option>
+                        <option>Feb 2026</option>
+                        <option>Jan 2026</option>
+                        <option>Q1 2026</option>
+                    </select>
+                </label>
+                <label class="filter-pill">
+                    <i class="fas fa-map-marker-alt" style="color:#059669"></i>
+                    <select>
+                        <option>All Provinces</option>
+                        <option>Laguna</option>
+                        <option>Batangas</option>
+                        <option>Cavite</option>
+                        <option>Rizal</option>
+                    </select>
+                </label>
+                <label class="filter-pill">
+                    <i class="fas fa-globe" style="color:#4f46e5"></i>
+                    <select>
+                        <option>All Destinations</option>
+                        <option>Saudi Arabia</option>
+                        <option>UAE</option>
+                        <option>Qatar</option>
+                        <option>Hong Kong</option>
+                    </select>
+                </label>
+            </div>
+        </div>
+    </div>
+
+    <!-- MAIN -->
+    <div class="main">
+
+        <!-- KPI SUMMARY CARDS -->
+        <div class="section-divider fade-in d1">
+            <i class="fas fa-chart-line" style="color:var(--blue-lt)"></i>
+            Summary — all applications
+        </div>
+        <div class="kpi-grid fade-in d1">
+            <div class="kpi-card c-blue">
+                <div class="kpi-top">
+                    <div class="kpi-label">Total Applications</div>
+                    <div class="kpi-icon c-blue"><i class="fas fa-folder-open"></i></div>
+                </div>
+                <div class="kpi-value c-blue">1,847</div>
+                <div class="kpi-sub">All time</div>
+            </div>
+            <div class="kpi-card c-amber">
+                <div class="kpi-top">
+                    <div class="kpi-label">Pending Review</div>
+                    <div class="kpi-icon c-amber"><i class="fas fa-hourglass-half"></i></div>
+                </div>
+                <div class="kpi-value c-amber">264</div>
+                <div class="kpi-sub" style="color:var(--amber)">Awaiting evaluator</div>
+            </div>
+            <div class="kpi-card c-indigo">
+                <div class="kpi-top">
+                    <div class="kpi-label">Avg. Processing</div>
+                    <div class="kpi-icon c-indigo"><i class="fas fa-clock"></i></div>
+                </div>
+                <div class="kpi-value c-indigo">4.2</div>
+                <div class="kpi-sub">Days per application</div>
+            </div>
+            <div class="kpi-card c-green">
+                <div class="kpi-top">
+                    <div class="kpi-label">Approval Rate</div>
+                    <div class="kpi-icon c-green"><i class="fas fa-circle-check"></i></div>
+                </div>
+                <div class="kpi-value c-green">68%</div>
+                <div class="kpi-sub">Last 30 days</div>
+            </div>
+        </div>
+
+        <!-- PANEL 1: PROCESS MONITORING -->
+        <div class="section-divider fade-in d2">
+            <i class="fas fa-sitemap" style="color:var(--blue-lt)"></i>
+            Process Monitoring — Application Workflow
+        </div>
+        <div class="grid-3 fade-in d2">
+
+            <!-- Applications by Stage -->
+            <div class="card">
+                <div class="card-head">
+                    <div class="card-title"><span class="ctdot" style="background:var(--blue-lt)"></span>Applications by
+                        Stage</div>
+                    <a href="#" class="card-link">All <i class="fas fa-arrow-right" style="font-size:9px"></i></a>
+                </div>
+                <div id="stage-list"></div>
+                <div class="analytic-alert">
+                    <i class="fas fa-triangle-exclamation" style="color:var(--amber);font-size:10px"></i>
+                    <span>Review stage takes the longest — avg. <b>2.6 days</b></span>
+                </div>
+            </div>
+
+            <!-- Avg Time per Stage -->
+            <div class="card">
+                <div class="card-head">
+                    <div class="card-title"><span class="ctdot" style="background:var(--amber)"></span>Avg. Time per
+                        Stage</div>
+                </div>
+                <div>
+                    <div class="stage-bar-row"><span class="stage-bar-lbl">Submission</span>
+                        <div class="stage-bar-track">
+                            <div class="stage-bar-fill" style="width:19%;background:#3b82f6"></div>
+                        </div><span class="stage-bar-val">0.5d</span>
+                    </div>
+                    <div class="stage-bar-row"><span class="stage-bar-lbl">Assignment</span>
+                        <div class="stage-bar-track">
+                            <div class="stage-bar-fill" style="width:54%;background:#f59e0b"></div>
+                        </div><span class="stage-bar-val">1.4d</span>
+                    </div>
+                    <div class="stage-bar-row"><span class="stage-bar-lbl">Review</span>
+                        <div class="stage-bar-track">
+                            <div class="stage-bar-fill" style="width:100%;background:#dc2626"></div>
+                        </div><span class="stage-bar-val">2.6d</span>
+                    </div>
+                    <div class="stage-bar-row"><span class="stage-bar-lbl">Decision</span>
+                        <div class="stage-bar-track">
+                            <div class="stage-bar-fill" style="width:31%;background:#059669"></div>
+                        </div><span class="stage-bar-val">0.8d</span>
+                    </div>
+                </div>
+                <div class="analytic-alert danger">
+                    <i class="fas fa-fire" style="color:var(--red);font-size:10px"></i>
+                    <span>Bottleneck: <b>Review</b> takes 62% of total time</span>
+                </div>
+                <div style="margin-top:14px">
+                    <div
+                        style="font-size:10px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--text3);margin-bottom:8px">
+                        Pending Overdue (&gt;7 days)</div>
+                    <div class="overdue-row"><span class="overdue-name">Juan dela Cruz</span><span class="overdue-days"
+                            style="color:var(--red)">12 days</span></div>
+                    <div class="overdue-row"><span class="overdue-name">Maria Santos</span><span class="overdue-days"
+                            style="color:var(--amber)">9 days</span></div>
+                    <div class="overdue-row"><span class="overdue-name">Jose Reyes</span><span class="overdue-days"
+                            style="color:var(--amber)">8 days</span></div>
+                </div>
+            </div>
+
+            <!-- Weekly Trend -->
+            <div class="card">
+                <div class="card-head">
+                    <div class="card-title"><span class="ctdot" style="background:var(--green)"></span>Weekly Submission
+                        Trend</div>
+                </div>
+                <div style="position:relative;height:200px">
+                    <canvas id="chartWeekly" role="img" aria-label="Weekly submission trend line chart"></canvas>
+                </div>
+                <div class="chart-legend">
+                    <span class="leg-item"><span class="leg-sw" style="background:#3b82f6"></span>Submitted</span>
+                    <span class="leg-item"><span class="leg-sw" style="background:#059669"></span>Approved</span>
+                    <span class="leg-item"><span class="leg-sw" style="background:#dc2626"></span>Rejected</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- PANEL 2: SERVICE MONITORING -->
+        <div class="section-divider fade-in d3">
+            <i class="fas fa-briefcase" style="color:var(--indigo)"></i>
+            Service Monitoring — RSF / Job Orders
+        </div>
+        <div class="grid-3 fade-in d3">
+
+            <!-- Top Services -->
+            <div class="card">
+                <div class="card-head">
+                    <div class="card-title"><span class="ctdot" style="background:var(--indigo)"></span>Top Services by
+                        Volume</div>
+                    <div class="svc-tab-row">
+                        <button class="svc-tab active" onclick="setSvcView('gov',this)">Gov't</button>
+                        <button class="svc-tab" onclick="setSvcView('priv',this)">Private</button>
+                    </div>
+                </div>
+                <div id="svc-gov">
+                    <div class="stage-bar-row"><span class="stage-bar-lbl">Healthcare</span>
+                        <div class="stage-bar-track">
+                            <div class="stage-bar-fill" style="width:100%;background:var(--indigo)"></div>
+                        </div><span class="stage-bar-val">45</span>
+                    </div>
+                    <div class="stage-bar-row"><span class="stage-bar-lbl">Construction</span>
+                        <div class="stage-bar-track">
+                            <div class="stage-bar-fill" style="width:80%;background:var(--indigo)"></div>
+                        </div><span class="stage-bar-val">36</span>
+                    </div>
+                    <div class="stage-bar-row"><span class="stage-bar-lbl">Education</span>
+                        <div class="stage-bar-track">
+                            <div class="stage-bar-fill" style="width:56%;background:var(--indigo)"></div>
+                        </div><span class="stage-bar-val">25</span>
+                    </div>
+                    <div class="stage-bar-row"><span class="stage-bar-lbl">Dom. Worker</span>
+                        <div class="stage-bar-track">
+                            <div class="stage-bar-fill" style="width:33%;background:var(--indigo)"></div>
+                        </div><span class="stage-bar-val">15</span>
+                    </div>
+                </div>
+                <div id="svc-priv" style="display:none">
+                    <div class="stage-bar-row"><span class="stage-bar-lbl">Factory</span>
+                        <div class="stage-bar-track">
+                            <div class="stage-bar-fill" style="width:100%;background:var(--amber)"></div>
+                        </div><span class="stage-bar-val">42</span>
+                    </div>
+                    <div class="stage-bar-row"><span class="stage-bar-lbl">Hospitality</span>
+                        <div class="stage-bar-track">
+                            <div class="stage-bar-fill" style="width:71%;background:var(--amber)"></div>
+                        </div><span class="stage-bar-val">30</span>
+                    </div>
+                    <div class="stage-bar-row"><span class="stage-bar-lbl">Retail</span>
+                        <div class="stage-bar-track">
+                            <div class="stage-bar-fill" style="width:45%;background:var(--amber)"></div>
+                        </div><span class="stage-bar-val">19</span>
+                    </div>
+                    <div class="stage-bar-row"><span class="stage-bar-lbl">Transport</span>
+                        <div class="stage-bar-track">
+                            <div class="stage-bar-fill" style="width:24%;background:var(--amber)"></div>
+                        </div><span class="stage-bar-val">10</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Monthly Usage Trend -->
+            <div class="card">
+                <div class="card-head">
+                    <div class="card-title"><span class="ctdot" style="background:#c9922a"></span>Monthly Usage Trend
+                    </div>
+                </div>
+                <div style="position:relative;height:200px">
+                    <canvas id="chartSvcUsage" role="img" aria-label="Monthly service usage stacked bar chart"></canvas>
+                </div>
+                <div class="chart-legend">
+                    <span class="leg-item"><span class="leg-sw"
+                            style="background:rgba(79,70,229,.8)"></span>Government</span>
+                    <span class="leg-item"><span class="leg-sw"
+                            style="background:rgba(217,119,6,.8)"></span>Private</span>
+                </div>
+            </div>
+
+            <!-- Top Destinations -->
+            <div class="card">
+                <div class="card-head">
+                    <div class="card-title"><span class="ctdot" style="background:var(--green)"></span>Top Destination
+                        Countries</div>
+                </div>
+                <div class="stage-bar-row"><span class="stage-bar-lbl">Saudi Arabia</span>
+                    <div class="stage-bar-track">
+                        <div class="stage-bar-fill" style="width:100%;background:var(--green)"></div>
+                    </div><span class="stage-bar-val">88</span>
+                </div>
+                <div class="stage-bar-row"><span class="stage-bar-lbl">UAE</span>
+                    <div class="stage-bar-track">
+                        <div class="stage-bar-fill" style="width:72%;background:var(--green)"></div>
+                    </div><span class="stage-bar-val">63</span>
+                </div>
+                <div class="stage-bar-row"><span class="stage-bar-lbl">Qatar</span>
+                    <div class="stage-bar-track">
+                        <div class="stage-bar-fill" style="width:48%;background:var(--green)"></div>
+                    </div><span class="stage-bar-val">42</span>
+                </div>
+                <div class="stage-bar-row"><span class="stage-bar-lbl">Kuwait</span>
+                    <div class="stage-bar-track">
+                        <div class="stage-bar-fill" style="width:30%;background:var(--green)"></div>
+                    </div><span class="stage-bar-val">26</span>
+                </div>
+                <div class="stage-bar-row"><span class="stage-bar-lbl">Hong Kong</span>
+                    <div class="stage-bar-track">
+                        <div class="stage-bar-fill" style="width:18%;background:var(--green)"></div>
+                    </div><span class="stage-bar-val">16</span>
+                </div>
+                <!-- Destination donut -->
+                <div style="margin-top:16px">
+                    <div class="pie-wrap">
+                        <div class="pie-canvas-wrap">
+                            <canvas id="chartPie" width="150" height="150" role="img"
+                                aria-label="Destination countries donut chart"></canvas>
+                        </div>
+                        <div id="pie-legend" style="flex:1"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- PANEL 3: ADMIN PERFORMANCE -->
+        <div class="section-divider fade-in d4">
+            <i class="fas fa-users-gear" style="color:var(--green)"></i>
+            Administrative Performance — Evaluator Staff
+        </div>
+        <div class="grid-admin fade-in d4">
+
+            <!-- Staff Performance -->
+            <div class="card">
+                <div class="card-head">
+                    <div class="card-title"><span class="ctdot" style="background:var(--green)"></span>Applications
+                        Handled per Evaluator</div>
+                </div>
+                <div class="staff-row">
+                    <div class="staff-avatar" style="background:#d1fae5;color:#059669">JR</div>
+                    <div class="staff-info">
+                        <div class="staff-name">Juan Reyes</div>
+                        <div class="staff-meta">45 apps &nbsp;·&nbsp; avg 3.1d</div>
+                        <div class="mini-bar-track">
+                            <div class="mini-bar-fill" style="width:90%;background:#059669"></div>
+                        </div>
+                    </div>
+                    <span class="staff-badge" style="background:#d1fae5;color:#059669">Fast</span>
+                </div>
+                <div class="staff-row">
+                    <div class="staff-avatar" style="background:#fef3c7;color:#d97706">ML</div>
+                    <div class="staff-info">
+                        <div class="staff-name">Maria Lim</div>
+                        <div class="staff-meta">36 apps &nbsp;·&nbsp; avg 4.8d</div>
+                        <div class="mini-bar-track">
+                            <div class="mini-bar-fill" style="width:72%;background:#d97706"></div>
+                        </div>
+                    </div>
+                    <span class="staff-badge" style="background:#fef3c7;color:#d97706">Avg</span>
+                </div>
+                <div class="staff-row">
+                    <div class="staff-avatar" style="background:#fef3c7;color:#d97706">AS</div>
+                    <div class="staff-info">
+                        <div class="staff-name">Ana Santos</div>
+                        <div class="staff-meta">30 apps &nbsp;·&nbsp; avg 5.5d</div>
+                        <div class="mini-bar-track">
+                            <div class="mini-bar-fill" style="width:60%;background:#d97706"></div>
+                        </div>
+                    </div>
+                    <span class="staff-badge" style="background:#fef3c7;color:#d97706">Avg</span>
+                </div>
+                <div class="staff-row">
+                    <div class="staff-avatar" style="background:#fee2e2;color:#dc2626">RD</div>
+                    <div class="staff-info">
+                        <div class="staff-name">Ramon Dela Cruz</div>
+                        <div class="staff-meta">24 apps &nbsp;·&nbsp; avg 7.2d</div>
+                        <div class="mini-bar-track">
+                            <div class="mini-bar-fill" style="width:48%;background:#dc2626"></div>
+                        </div>
+                    </div>
+                    <span class="staff-badge" style="background:#fee2e2;color:#dc2626">Slow</span>
+                </div>
+                <div class="analytic-alert danger" style="margin-top:12px">
+                    <i class="fas fa-user-clock" style="color:var(--red);font-size:10px"></i>
+                    <span>Ramon D. flagged — avg <b>7.2 days</b> per application (threshold: 5d)</span>
+                </div>
+            </div>
+
+            <!-- Workload Donut -->
+            <div class="card">
+                <div class="card-head">
+                    <div class="card-title"><span class="ctdot" style="background:var(--blue-lt)"></span>Workload
+                        Distribution</div>
+                </div>
+                <div class="pie-wrap">
+                    <div class="pie-canvas-wrap">
+                        <canvas id="chartWorkload" width="150" height="150" role="img"
+                            aria-label="Workload distribution donut"></canvas>
+                    </div>
+                    <div id="workload-legend" style="flex:1"></div>
+                </div>
+                <!-- Active job orders mini -->
+                <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--border)">
+                    <div
+                        style="font-size:10px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--text3);margin-bottom:10px">
+                        Active Job Orders</div>
+                    <div class="job-item">
+                        <div class="job-head">
+                            <div>
+                                <div class="job-name">RSF-2026-045</div>
+                                <div class="job-sub">Caregiver – Hong Kong</div>
+                            </div>
+                            <div class="job-count" style="color:var(--green)">47<span
+                                    style="color:var(--text3);font-weight:500;font-size:10px">/60</span></div>
+                        </div>
+                        <div class="job-track">
+                            <div class="job-fill" style="width:78%;background:linear-gradient(90deg,#059669,#34d399)">
+                            </div>
+                        </div>
+                    </div>
+                    <div class="job-item">
+                        <div class="job-head">
+                            <div>
+                                <div class="job-name">RSF-2026-038</div>
+                                <div class="job-sub">Nurse – Singapore</div>
+                            </div>
+                            <div class="job-count" style="color:var(--blue-lt)">22<span
+                                    style="color:var(--text3);font-weight:500;font-size:10px">/40</span></div>
+                        </div>
+                        <div class="job-track">
+                            <div class="job-fill" style="width:55%;background:linear-gradient(90deg,#1d4ed8,#60a5fa)">
+                            </div>
+                        </div>
+                    </div>
+                    <div class="job-item">
+                        <div class="job-head">
+                            <div>
+                                <div class="job-name">RSF-2026-031</div>
+                                <div class="job-sub">Dom. Worker – UAE</div>
+                            </div>
+                            <div class="job-count" style="color:var(--amber)">33<span
+                                    style="color:var(--text3);font-weight:500;font-size:10px">/50</span></div>
+                        </div>
+                        <div class="job-track">
+                            <div class="job-fill" style="width:66%;background:linear-gradient(90deg,#d97706,#fbbf24)">
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+    </div><!-- /main -->
+
+    <!-- DOCK -->
+    <div class="dock-wrap">
+        <nav class="dock">
+            <a href="dashboard.php" class="dk"><i class="fas fa-house"></i><span class="dk-lbl">Home</span></a>
+            <a href="applications.php" class="dk"><i class="fas fa-file-lines"></i><span class="dk-lbl">Apps</span></a>
+            <div class="dk-div"></div>
+            <a href="user.php" class="dk"><i class="fas fa-users-gear"></i><span class="dk-lbl">Evaluators</span></a>
+            <a href="assignments.html" class="dk"><i class="fas fa-list-check"></i><span
+                    class="dk-lbl">Assign</span></a>
+            <a href="job-orders.php" class="dk"><i class="fas fa-briefcase"></i><span class="dk-lbl">RSF</span></a>
+            <a href="analytics.php" class="dk active"><i class="fas fa-chart-bar"></i><span
+                    class="dk-lbl">Analytics</span></a>
+            <div class="dk-div"></div>
+            <a href="#" class="dk"><i class="fas fa-gear"></i><span class="dk-lbl">Settings</span></a>
+        </nav>
+    </div>
+
+    <script>
+        /* Live date & greeting */
+        const h = new Date().getHours();
+        document.getElementById('greeting-text').textContent =
+            (h < 12 ? 'Good morning' : h < 18 ? 'Good afternoon' : 'Good evening') + ', Admin';
+        document.getElementById('live-date').textContent =
+            new Date().toLocaleDateString('en-PH', { weekday: 'short', year: 'numeric', month: 'short', day: 'numeric' }).toUpperCase();
+
+        /* Stage list */
+        [
+            { l: 'Pending', c: 120, color: '#f59e0b' },
+            { l: 'Unassigned', c: 144, color: '#ef4444' },
+            { l: 'Assigned', c: 215, color: '#3b82f6' },
+            { l: 'Under Eval.', c: 392, color: '#6366f1' },
+            { l: 'Compliance', c: 88, color: '#f97316' },
+            { l: 'Approved', c: 187, color: '#059669' },
+            { l: 'Disapproved', c: 42, color: '#dc2626' },
+        ].forEach(s => {
+            const pct = Math.round(s.c / 392 * 100);
+            document.getElementById('stage-list').innerHTML += `
+    <div class="s-row">
+        <span class="s-dot" style="background:${s.color}"></span>
+        <span class="s-name">${s.l}</span>
+        <span class="s-num" style="color:${s.color}">${s.c}</span>
+        <div class="s-bar-wrap"><div class="s-bar-fill" style="width:${pct}%;background:${s.color}"></div></div>
+    </div>`;
+        });
+
+        /* Service toggle */
+        function setSvcView(type, btn) {
+            document.getElementById('svc-gov').style.display = type === 'gov' ? '' : 'none';
+            document.getElementById('svc-priv').style.display = type === 'priv' ? '' : 'none';
+            document.querySelectorAll('.svc-tab').forEach(t => t.classList.remove('active'));
+            btn.classList.add('active');
+        }
+
+        /* Weekly trend */
+        new Chart(document.getElementById('chartWeekly'), {
+            type: 'line',
+            data: {
+                labels: ['W1', 'W2', 'W3', 'W4', 'W5', 'W6', 'W7', 'W8'],
+                datasets: [
+                    { label: 'Submitted', data: [12, 18, 15, 22, 19, 25, 20, 28], borderColor: '#3b82f6', backgroundColor: 'rgba(59,130,246,.08)', tension: .4, fill: true, borderWidth: 1.5, pointRadius: 2 },
+                    { label: 'Approved', data: [8, 10, 9, 14, 12, 16, 13, 18], borderColor: '#059669', backgroundColor: 'rgba(5,150,105,.06)', tension: .4, fill: true, borderWidth: 1.5, pointRadius: 2 },
+                    { label: 'Rejected', data: [2, 3, 2, 4, 3, 5, 4, 5], borderColor: '#dc2626', tension: .4, borderWidth: 1.5, pointRadius: 2 }
+                ]
+            },
+            options: {
+                responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } },
+                scales: {
+                    x: { grid: { display: false }, ticks: { font: { family: 'DM Sans', size: 10 }, maxRotation: 0 } },
+                    y: { grid: { color: '#f1f5f9' }, ticks: { font: { family: 'DM Sans', size: 10 } } }
+                }
+            }
+        });
+
+        /* Monthly service usage */
+        new Chart(document.getElementById('chartSvcUsage'), {
+            type: 'bar',
+            data: {
+                labels: ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun'],
+                datasets: [
+                    { label: 'Government', data: [28, 35, 30, 42, 38, 45], backgroundColor: 'rgba(79,70,229,.75)', borderRadius: 4 },
+                    { label: 'Private', data: [20, 25, 22, 30, 28, 32], backgroundColor: 'rgba(217,119,6,.75)', borderRadius: 4 }
+                ]
+            },
+            options: {
+                responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } },
+                scales: {
+                    x: { stacked: true, grid: { display: false }, ticks: { font: { family: 'DM Sans', size: 10 } } },
+                    y: { stacked: true, grid: { color: '#f1f5f9' }, ticks: { font: { family: 'DM Sans', size: 10 } } }
+                }
+            }
+        });
+
+        /* Destination pie */
+        const pc = ['#1d4ed8', '#059669', '#d97706', '#6366f1', '#dc2626', '#94a3b8'];
+        const pl = ['Hong Kong', 'Singapore', 'UAE', 'Saudi Arabia', 'Qatar', 'Others'];
+        const pd = [32, 18, 22, 14, 8, 6];
+        new Chart(document.getElementById('chartPie'), {
+            type: 'doughnut',
+            data: { labels: pl, datasets: [{ data: pd, backgroundColor: pc, borderWidth: 3, borderColor: '#fff', hoverOffset: 5 }] },
+            options: { cutout: '62%', maintainAspectRatio: true, plugins: { legend: { display: false } } }
+        });
+        pl.forEach((l, i) => {
+            document.getElementById('pie-legend').innerHTML += `
+    <div class="p-row">
+        <span class="p-sw" style="background:${pc[i]}"></span>
+        <span class="p-lbl">${l}</span>
+        <span class="p-pct">${pd[i]}%</span>
+    </div>`;
+        });
+
+        /* Workload donut */
+        const wlL = ['Juan R.', 'Maria L.', 'Ana S.', 'Ramon D.'];
+        const wlD = [45, 36, 30, 24];
+        const wlC = ['#059669', '#d97706', '#d97706', '#dc2626'];
+        new Chart(document.getElementById('chartWorkload'), {
+            type: 'doughnut',
+            data: { labels: wlL, datasets: [{ data: wlD, backgroundColor: wlC, borderWidth: 3, borderColor: '#fff', hoverOffset: 4 }] },
+            options: { cutout: '62%', maintainAspectRatio: true, plugins: { legend: { display: false } } }
+        });
+        wlL.forEach((l, i) => {
+            document.getElementById('workload-legend').innerHTML += `
+    <div class="p-row">
+        <span class="p-sw" style="background:${wlC[i]}"></span>
+        <span class="p-lbl">${l}</span>
+        <span class="p-pct">${wlD[i]}</span>
+    </div>`;
+        });
+    </script>
+</body>
+
+</html>

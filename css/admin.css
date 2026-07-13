@@ -1,0 +1,35 @@
+/* Shared admin styles (apps/user/job-orders) */
+
+body {
+  font-family: 'Inter', system-ui, sans-serif;
+}
+
+/* Sidebar animation on mobile toggle */
+.sidebar {
+  transition: all 0.3s ease;
+}
+
+/* Left nav */
+.nav-link:hover {
+  background: #f1f5f9;
+}
+
+.nav-link.active {
+  background-color: #eff6ff;
+  color: #1e40af;
+  border-left: 4px solid #1e40af;
+}
+
+/* Table headers */
+th {
+  font-weight: 500;
+  color: #374151;
+}
+
+/* Applications page badge helper */
+.status-badge {
+  font-size: 0.75rem;
+  padding: 0.25rem 0.75rem;
+  border-radius: 9999px;
+}
+
