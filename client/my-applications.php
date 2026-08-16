@@ -319,6 +319,7 @@ $single_mode = ($total === 1 && !$show_wizard);
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
     <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,wght@0,400;0,500;0,600;0,700;0,800;1,400&family=DM+Serif+Display&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700;9..40,800&family=DM+Serif+Display&display=swap" rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
     <link rel="icon" type="image/png" href="https://dmw.gov.ph/images/dmw_tahanan_ng_ofw_colored.png">
     <link rel="stylesheet" href="../css/dashboard.css">
@@ -1430,7 +1431,7 @@ $single_mode = ($total === 1 && !$show_wizard);
             <div class="brand-divider"></div>
             <div class="brand-text">
                 <h1>Department of Migrant Workers</h1>
-                <p>REGIONAL OFFICE IV-A &nbsp;-&nbsp; APPLICANT PORTAL</p>
+                <p>REGIONAL OFFICE IV-A &nbsp;·&nbsp; APPLICANT PORTAL</p>
             </div>
         </div>
         <div class="topbar-right">

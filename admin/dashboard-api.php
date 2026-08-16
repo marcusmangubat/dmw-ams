@@ -141,13 +141,12 @@ try {
     echo json_encode(['error' => $e->getMessage()]);
 }
 
-/* ═══════════════════════════════════════════════════════════════════
+/* 
    1. KPI STATS
    ─ Total apps (all time)
    ─ Pending / Under Evaluation / Approved counts
    ─ Month-over-month % change
-   ─ Average evaluation days
-═══════════════════════════════════════════════════════════════════ */
+   ─ Average evaluation days */
 function getStats(mysqli $db, array $f): array
 {
     // Total applications (filtered)

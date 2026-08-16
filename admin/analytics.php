@@ -467,7 +467,7 @@ $initials = strtoupper(substr($parts[0] ?? '', 0, 1) . substr(end($parts), 0, 1)
     </nav>
   </div>
 
-  <!-- ── JAVASCRIPT ────────────────────────────────────────────── -->
+  <!-- JAVASCRIPT  -->
   <script>
     const API = 'analytics-api.php';
     const chartOpts = {

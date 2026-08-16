@@ -128,6 +128,130 @@ function parsePostedQualifications(): array
     return $qualifications;
 }
 
+/**
+ * Look up the cached PHP-equivalent value for one unit of $currencyCode
+ * from the exchange_rates table (refreshed daily by the cron job).
+ * Returns null if the currency isn't cached yet (e.g. rate cron hasn't
+ * run since this currency was first used) so callers can leave the
+ * salary_*_php columns null instead of silently storing a wrong 0.
+ */
+function getExchangeRate(mysqli $database, string $currencyCode): ?float
+{
+    $currencyCode = strtoupper(trim($currencyCode));
+
+    if ($currencyCode === 'PHP') {
+        return 1.0;
+    }
+
+    $stmt = $database->prepare("SELECT exchange_rate FROM exchange_rates WHERE currency_code = ?");
+    $stmt->bind_param('s', $currencyCode);
+    $stmt->execute();
+    $row = $stmt->get_result()->fetch_assoc();
+
+    return $row ? (float)$row['exchange_rate'] : null;
+}
+/**
+ * Convert a salary amount in $currencyCode to its PHP equivalent using
+ * the cached daily rate. Returns null if either the amount or the rate
+ * is unavailable, so the caller can store NULL rather than 0.
+ */
+function convertToPhp(mysqli $database, ?float $amount, string $currencyCode): ?float
+{
+    if ($amount === null || $amount <= 0) {
+        return null;
+    }
+
+    $rate = getExchangeRate($database, $currencyCode);
+
+    if ($rate === null) {
+        // Optional: Auto refresh if rate is missing
+        // updateExchangeRates($database);
+        return null;
+    }
+
+    return round($amount * $rate, 2);
+}
+
+/**
+ * Fetch latest exchange rates from API and update database
+ */
+function updateExchangeRates(mysqli $db): bool
+{
+    $apiUrl = "https://open.er-api.com/v6/latest/PHP";
+
+    $json = @file_get_contents($apiUrl);
+    if ($json === false) {
+        error_log("Failed to fetch exchange rates");
+        return false;
+    }
+
+    $data = json_decode($json, true);
+    if (($data['result'] ?? '') !== 'success') {
+        error_log("Exchange API error");
+        return false;
+    }
+
+    $rates = $data['rates'] ?? [];
+    if (empty($rates)) return false;
+
+    $db->begin_transaction();
+    try {
+        $db->query("TRUNCATE TABLE exchange_rates");
+
+        $stmt = $db->prepare("INSERT INTO exchange_rates (currency_code, exchange_rate) VALUES (?, ?)");
+
+        foreach ($rates as $currency => $rateToPhp) {
+            $exchangeRate = ($currency === 'PHP') ? 1.0 : round(1 / $rateToPhp, 8);
+            $stmt->bind_param('sd', $currency, $exchangeRate);
+            $stmt->execute();
+        }
+
+        $db->commit();
+        return true;
+    } catch (Exception $e) {
+        $db->rollback();
+        error_log("Exchange rate update failed: " . $e->getMessage());
+        return false;
+    }
+}
+
+/**
+ * Re-calculate PHP salaries for ALL existing job orders
+ */
+function updateAllJobOrderPhpSalaries(mysqli $db): bool
+{
+    $result = $db->query("SELECT id, salary_min, salary_max, salary_currency 
+                          FROM rsf_job_orders 
+                          WHERE salary_currency IS NOT NULL");
+
+    if (!$result) return false;
+
+    $success = true;
+    $db->begin_transaction();
+
+    try {
+        while ($row = $result->fetch_assoc()) {
+            $min_php = convertToPhp($db, (float)$row['salary_min'], $row['salary_currency']);
+            $max_php = convertToPhp($db, (float)$row['salary_max'], $row['salary_currency']);
+
+            $stmt = $db->prepare("UPDATE rsf_job_orders 
+                                  SET salary_min_php = ?, salary_max_php = ? 
+                                  WHERE id = ?");
+            $stmt->bind_param('ddi', $min_php, $max_php, $row['id']);
+            if (!$stmt->execute()) {
+                $success = false;
+            }
+        }
+
+        $db->commit();
+        return $success;
+    } catch (Exception $e) {
+        $db->rollback();
+        error_log("Failed to update job order PHP salaries: " . $e->getMessage());
+        return false;
+    }
+}
+
 function generateNextRsfNumber(mysqli $database): string
 {
     $yy   = date('y');   // "26"
@@ -227,6 +351,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         exit;
     }
 
+    // Refresh exchange rates from API + update all existing salaries
+    if ($_POST['action'] === 'refresh_rates') {
+        try {
+            $rateSuccess = updateExchangeRates($database);
+            $salarySuccess = updateAllJobOrderPhpSalaries($database);
+
+            echo json_encode([
+                'status' => ($rateSuccess && $salarySuccess) ? 'success' : 'partial',
+                'message' => 'Exchange rates updated. ' .
+                    ($salarySuccess ? 'All job order PHP salaries have been recalculated.' : 'Some salaries could not be updated.')
+            ]);
+        } catch (Throwable $e) {
+            echo json_encode(['status' => 'error', 'message' => $e->getMessage()]);
+        }
+        exit;
+    }
+
     // ── NEW: Assign evaluator to an application ───────────────────────────────
     if ($_POST['action'] === 'assign_evaluator') {
         try {
@@ -300,14 +441,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             $subcategory_id  = !empty($_POST['subcategory_id']) ? (int) $_POST['subcategory_id'] : null;
             $slots_available = (int)($_POST['slots_available'] ?? 0);
             $qualifications  = trim($_POST['qualifications'] ?? '');
-            $salary_min      = ($_POST['salary_min'] ?? '') !== '' ? (float) $_POST['salary_min'] : null;
-            $salary_max      = ($_POST['salary_max'] ?? '') !== '' ? (float) $_POST['salary_max'] : null;
-            $salary_currency = trim($_POST['salary_currency'] ?? '') !== '' ? trim($_POST['salary_currency']) : 'PHP';
+            //  $salary_min      = ($_POST['salary_min'] ?? '') !== '' ? (float) $_POST['salary_min'] : null;
+            //  $salary_max      = ($_POST['salary_max'] ?? '') !== '' ? (float) $_POST['salary_max'] : null;
+            //  $salary_currency = trim($_POST['salary_currency'] ?? '') !== '' ? trim($_POST['salary_currency']) : 'PHP';
+            //  $salary_min_php  = convertToPhp($database, $salary_min, $salary_currency);
+            //  $salary_max_php  = convertToPhp($database, $salary_max, $salary_currency);
             $deadline        = !empty($_POST['deadline']) ? trim($_POST['deadline']) : null;
             $pdf_path = null;
             $requirements = parsePostedRequirements();
             $questions = parsePostedQuestions();
             $qualifications_structured = parsePostedQualifications();
+            $salary_min      = ($_POST['salary_min'] ?? '') !== '' ? (float)$_POST['salary_min'] : null;
+            $salary_max      = ($_POST['salary_max'] ?? '') !== '' ? (float)$_POST['salary_max'] : null;
+            $salary_currency = trim($_POST['salary_currency'] ?? 'PHP');
+            $salary_min_php  = convertToPhp($database, $salary_min, $salary_currency);
+            $salary_max_php  = convertToPhp($database, $salary_max, $salary_currency);
 
             if (isset($_FILES['rsf_pdf']) && $_FILES['rsf_pdf']['error'] === UPLOAD_ERR_OK) {
                 $upload_dir = dirname(__DIR__) . DIRECTORY_SEPARATOR . 'uploads' . DIRECTORY_SEPARATOR . 'rsf_pdfs' . DIRECTORY_SEPARATOR;
@@ -324,17 +472,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
 
             $database->begin_transaction();
             $txStarted = true;
-            $stmt = $database->prepare("INSERT INTO rsf_job_orders (rsf_number, employer_name, worksite_country, classification, position_title, subcategory_id, slots_available, qualifications, salary_min, salary_max, salary_currency, deadline, pdf_path) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+            $stmt = $database->prepare("INSERT INTO rsf_job_orders 
+            (rsf_number, employer_name, worksite_country, classification, position_title, 
+            subcategory_id, slots_available, qualifications, salary_min, salary_max, 
+            salary_currency, salary_min_php, salary_max_php, deadline, pdf_path) 
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
             if (!$stmt) {
                 echo json_encode(['status' => 'error', 'message' => 'Database prepare failed: ' . $database->error]);
                 exit;
             }
-            $stmt->bind_param('sssssiisddsss', $rsf_number, $employer_name, $worksite_country, $classification, $position_title, $subcategory_id, $slots_available, $qualifications, $salary_min, $salary_max, $salary_currency, $deadline, $pdf_path);
+            $stmt->bind_param('sssssiisddsddss', $rsf_number, $employer_name, $worksite_country, $classification, $position_title, $subcategory_id, $slots_available, $qualifications, $salary_min, $salary_max, $salary_currency, $salary_min_php, $salary_max_php, $deadline, $pdf_path);
             $executed = $stmt->execute();
             if (!$executed && $database->errno === 1062) {
                 // Extremely rare race: another insert grabbed this number first, regenerate once.
                 $rsf_number = generateNextRsfNumber($database);
-                $stmt->bind_param('sssssiisddsss', $rsf_number, $employer_name, $worksite_country, $classification, $position_title, $subcategory_id, $slots_available, $qualifications, $salary_min, $salary_max, $salary_currency, $deadline, $pdf_path);
+                $stmt->bind_param('sssssiisddsddss', $rsf_number, $employer_name, $worksite_country, $classification, $position_title, $subcategory_id, $slots_available, $qualifications, $salary_min, $salary_max, $salary_currency, $salary_min_php, $salary_max_php, $deadline, $pdf_path);
                 $executed = $stmt->execute();
             }
             if ($executed) {
@@ -400,7 +552,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 echo json_encode(['status' => 'error', 'message' => 'Invalid job order ID.']);
                 exit;
             }
-            $rsf_number      = trim($_POST['rsf_number'] ?? '');
+            $pdf_path = null;
+            $rsf_number = '';
+            $stmt = $database->prepare("SELECT pdf_path, rsf_number FROM rsf_job_orders WHERE id = ?");
+            $stmt->bind_param('i', $id);
+            $stmt->execute();
+            $row = $stmt->get_result()->fetch_assoc();
+            if ($row) {
+                $pdf_path = $row['pdf_path'];
+                $rsf_number = $row['rsf_number'];
+            }
             $employer_name   = trim($_POST['employer_name'] ?? '');
             $worksite_country = trim($_POST['worksite_country'] ?? '');
             $classification  = trim($_POST['classification'] ?? '');
@@ -408,13 +569,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             $subcategory_id  = !empty($_POST['subcategory_id']) ? (int) $_POST['subcategory_id'] : null;
             $slots_available = (int)($_POST['slots_available'] ?? 0);
             $qualifications  = trim($_POST['qualifications'] ?? '');
-            $salary_min      = ($_POST['salary_min'] ?? '') !== '' ? (float) $_POST['salary_min'] : null;
-            $salary_max      = ($_POST['salary_max'] ?? '') !== '' ? (float) $_POST['salary_max'] : null;
-            $salary_currency = trim($_POST['salary_currency'] ?? '') !== '' ? trim($_POST['salary_currency']) : 'PHP';
+            // $salary_min      = ($_POST['salary_min'] ?? '') !== '' ? (float) $_POST['salary_min'] : null;
+            // $salary_max      = ($_POST['salary_max'] ?? '') !== '' ? (float) $_POST['salary_max'] : null;
+            // $salary_currency = trim($_POST['salary_currency'] ?? '') !== '' ? trim($_POST['salary_currency']) : 'PHP';
+            // $salary_min_php  = convertToPhp($database, $salary_min, $salary_currency);
+            // $salary_max_php  = convertToPhp($database, $salary_max, $salary_currency);
             $deadline        = !empty($_POST['deadline']) ? trim($_POST['deadline']) : null;
             $requirements = parsePostedRequirements();
             $questions = parsePostedQuestions();
             $qualifications_structured = parsePostedQualifications();
+            $salary_min      = ($_POST['salary_min'] ?? '') !== '' ? (float)$_POST['salary_min'] : null;
+            $salary_max      = ($_POST['salary_max'] ?? '') !== '' ? (float)$_POST['salary_max'] : null;
+            $salary_currency = trim($_POST['salary_currency'] ?? 'PHP');
+            $salary_min_php  = convertToPhp($database, $salary_min, $salary_currency);
+            $salary_max_php  = convertToPhp($database, $salary_max, $salary_currency);
 
             $pdf_path = null;
             $stmt = $database->prepare("SELECT pdf_path FROM rsf_job_orders WHERE id = ?");
@@ -436,14 +604,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 }
             }
 
-            $stmt = $database->prepare("UPDATE rsf_job_orders SET rsf_number=?, employer_name=?, worksite_country=?, classification=?, position_title=?, subcategory_id=?, slots_available=?, qualifications=?, salary_min=?, salary_max=?, salary_currency=?, deadline=?, pdf_path=? WHERE id=?");
+            $stmt = $database->prepare("UPDATE rsf_job_orders SET 
+                rsf_number=?, employer_name=?, worksite_country=?, classification=?, 
+                position_title=?, subcategory_id=?, slots_available=?, qualifications=?, 
+                salary_min=?, salary_max=?, salary_currency=?, 
+                salary_min_php=?, salary_max_php=?, deadline=?, pdf_path=? 
+                WHERE id=?");
             if (!$stmt) {
                 echo json_encode(['status' => 'error', 'message' => 'Database prepare failed: ' . $database->error]);
                 exit;
             }
             $database->begin_transaction();
             $txStarted = true;
-            $stmt->bind_param('sssssiisddsssi', $rsf_number, $employer_name, $worksite_country, $classification, $position_title, $subcategory_id, $slots_available, $qualifications, $salary_min, $salary_max, $salary_currency, $deadline, $pdf_path, $id);
+            $stmt->bind_param('sssssiisddsddssi', $rsf_number, $employer_name, $worksite_country, $classification, $position_title, $subcategory_id, $slots_available, $qualifications, $salary_min, $salary_max, $salary_currency, $salary_min_php, $salary_max_php, $deadline, $pdf_path, $id);
             if ($stmt->execute()) {
                 $del = $database->prepare("DELETE FROM rsf_required_documents WHERE rsf_id = ?");
                 $del->bind_param('i', $id);
@@ -617,6 +790,26 @@ if ($degStmt) {
         $degreePrograms[] = (string) $d['degree_name'];
     }
 }
+
+$exchangeRates = ['PHP' => 1.0];
+$rateStmt = $database->query("SELECT currency_code, exchange_rate FROM exchange_rates");
+if ($rateStmt) {
+    while ($r = $rateStmt->fetch_assoc()) {
+        $exchangeRates[$r['currency_code']] = (float) $r['exchange_rate'];
+    }
+}
+
+// Fetch all currencies for searchable dropdown
+$allCurrencies = [];
+$currencyStmt = $database->query("SELECT currency_code FROM exchange_rates ORDER BY currency_code ASC");
+if ($currencyStmt) {
+    while ($row = $currencyStmt->fetch_assoc()) {
+        $allCurrencies[] = $row['currency_code'];
+    }
+}
+if (empty($allCurrencies)) {
+    $allCurrencies = ['PHP'];
+}
 ?>
 
 <!DOCTYPE html>
@@ -629,10 +822,10 @@ if ($degStmt) {
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700;9..40,800&family=DM+Serif+Display&display=swap" rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
     <link rel="icon" type="image/png" href="https://dmw.gov.ph/images/dmw_tahanan_ng_ofw_colored.png">
     <link rel="stylesheet" href="../css/dashboard.css">
-
     <style>
         /* ── Applicants Modal ── */
         #applicantsModal .modal-overlay {
@@ -790,6 +983,16 @@ if ($degStmt) {
         .jo-action-btn:hover {
             background: #f2f4f7;
         }
+
+        #addModal .modal-overlay,
+        #editModal .modal-overlay {
+            animation: fadeIn .18s ease;
+        }
+
+        #addModal .modal-panel,
+        #editModal .modal-panel {
+            animation: slideUp .22s cubic-bezier(.22, .68, 0, 1.2);
+        }
     </style>
 </head>
 
@@ -832,10 +1035,20 @@ if ($degStmt) {
                         Manage Recruitment Specification Forms and available positions
                     </p>
                 </div>
-                <button onclick="openAddModal()"
-                    class="bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-2xl font-medium flex items-center gap-2 shadow-sm transition">
-                    <i class="fas fa-plus"></i> Add New RSF Job Order
-                </button>
+
+                <div class="flex items-center gap-3">
+                    <!-- Refresh Rates Button -->
+                    <button onclick="refreshExchangeRates()"
+                        class="bg-emerald-600 hover:bg-emerald-700 text-white px-5 py-3 rounded-2xl font-medium flex items-center gap-2 shadow-sm transition">
+                        <i class="fas fa-sync-alt"></i> Refresh Rates
+                    </button>
+
+                    <!-- Add New Button -->
+                    <button onclick="openAddModal()"
+                        class="bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-2xl font-medium flex items-center gap-2 shadow-sm transition">
+                        <i class="fas fa-plus"></i> Add New RSF Job Order
+                    </button>
+                </div>
             </div>
 
             <!-- Filters -->
@@ -1001,14 +1214,17 @@ if ($degStmt) {
     </div>
 
     <!-- Add New Modal -->
-    <div id="addModal" class="hidden fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-[100]">
-        <div class="bg-white rounded-3xl w-full max-w-4xl mx-4 max-h-[92vh] overflow-auto">
+    <div id="addModal" class="hidden fixed inset-0 z-[300] flex items-center justify-center">
+        <div class="modal-overlay absolute inset-0 bg-black/60 backdrop-blur-sm" onclick="closeAddModal()"></div>
+        <div class="modal-panel relative bg-white rounded-3xl w-full max-w-4xl mx-4 max-h-[calc(100vh-120px)] overflow-auto">
             <div class="p-8 border-b flex items-center justify-between sticky top-0 bg-white z-10 rounded-t-3xl">
                 <h3 class="text-2xl font-semibold text-gray-900">Add New RSF Job Order</h3>
                 <button onclick="closeAddModal()" class="text-gray-400 hover:text-gray-600 text-3xl leading-none">&times;</button>
             </div>
             <form id="addForm" class="p-8 grid grid-cols-1 md:grid-cols-2 gap-6">
                 <input type="hidden" name="action" value="add">
+
+                <!-- Section: RSF Number (auto-generated) -->
                 <div class="md:col-span-2">
                     <label class="block text-sm font-medium text-gray-700 mb-1">RSF Number</label>
                     <input type="text" id="rsf_number_preview" readonly disabled
@@ -1016,6 +1232,10 @@ if ($degStmt) {
                         class="w-full px-5 py-3 border border-gray-200 rounded-2xl bg-gray-50 text-gray-500 cursor-not-allowed">
                     <p class="text-xs text-gray-400 mt-1">Auto-generated on save (format: DMW-RSF-YYNNNN-YYYY).</p>
                 </div>
+
+                <hr class="md:col-span-2 border-gray-200 my-1">
+
+                <!-- Section: Employer & Worksite -->
                 <div>
                     <label class="block text-sm font-medium text-gray-700 mb-1">Employer Name <span class="text-red-500">*</span></label>
                     <input type="text" name="employer_name" required placeholder="e.g. ABC International Manpower Services"
@@ -1026,14 +1246,18 @@ if ($degStmt) {
                     <input type="text" name="worksite_country" placeholder="e.g. Saudi Arabia, UAE, Qatar, Canada"
                         class="w-full px-5 py-3 border border-gray-200 rounded-2xl focus:outline-none focus:border-blue-500">
                 </div>
+
+                <hr class="md:col-span-2 border-gray-200 my-1">
+
+                <!-- Section: Classification & Position -->
                 <!--<div>
-                    <label class="block text-sm font-medium text-gray-700 mb-1">Classification</label>
-                    <select name="classification" class="w-full px-5 py-3 border border-gray-200 rounded-2xl focus:outline-none focus:border-blue-500">
-                        <option value="">Select Classification</option>
-                        <option value="Government">Government</option>
-                        <option value="Private">Private</option>
-                    </select>
-                </div>-->
+                <label class="block text-sm font-medium text-gray-700 mb-1">Classification</label>
+                <select name="classification" class="w-full px-5 py-3 border border-gray-200 rounded-2xl focus:outline-none focus:border-blue-500">
+                    <option value="">Select Classification</option>
+                    <option value="Government">Government</option>
+                    <option value="Private">Private</option>
+                </select>
+            </div>-->
                 <div>
                     <label class="block text-sm font-medium text-gray-700 mb-1">Classification</label>
                     <select name="classification" class="w-full px-5 py-3 border border-gray-200 rounded-2xl focus:outline-none focus:border-blue-500">
@@ -1045,6 +1269,10 @@ if ($degStmt) {
                     <input type="text" name="position_title" required placeholder="e.g. Registered Nurse, Heavy Equipment Operator"
                         class="w-full px-5 py-3 border border-gray-200 rounded-2xl focus:outline-none focus:border-blue-500">
                 </div>
+
+                <hr class="md:col-span-2 border-gray-200 my-1">
+
+                <!-- Section: Job Category / Subcategory -->
                 <div>
                     <label class="block text-sm font-medium text-gray-700 mb-1">Job Category</label>
                     <select id="add_category_id" onchange="onCategoryChange('add')"
@@ -1060,28 +1288,38 @@ if ($degStmt) {
                     </select>
                     <p class="text-xs text-gray-400 mt-1">Used for applicant preference matching.</p>
                 </div>
+
+                <hr class="md:col-span-2 border-gray-200 my-1">
+
+                <!-- Section: Salary -->
                 <div>
                     <label class="block text-sm font-medium text-gray-700 mb-1">Salary Min</label>
-                    <input type="number" name="salary_min" step="0.01" min="0" placeholder="e.g. 20000"
+                    <input type="number" name="salary_min" id="add_salary_min" step="0.01" min="0" placeholder="e.g. 20000"
+                        oninput="updatePhpPreview('add')"
                         class="w-full px-5 py-3 border border-gray-200 rounded-2xl focus:outline-none focus:border-blue-500">
                 </div>
                 <div>
                     <label class="block text-sm font-medium text-gray-700 mb-1">Salary Max</label>
-                    <input type="number" name="salary_max" step="0.01" min="0" placeholder="e.g. 25000"
+                    <input type="number" name="salary_max" id="add_salary_max" step="0.01" min="0" placeholder="e.g. 25000"
+                        oninput="updatePhpPreview('add')"
                         class="w-full px-5 py-3 border border-gray-200 rounded-2xl focus:outline-none focus:border-blue-500">
                 </div>
                 <div>
                     <label class="block text-sm font-medium text-gray-700 mb-1">Salary Currency</label>
-                    <select name="salary_currency" class="w-full px-5 py-3 border border-gray-200 rounded-2xl focus:outline-none focus:border-blue-500">
-                        <option value="PHP" selected>PHP</option>
-                        <option value="USD">USD</option>
-                        <option value="EUR">EUR</option>
-                        <option value="SAR">SAR</option>
-                        <option value="TWD">TWD</option>
-                        <option value="JPY">JPY</option>
-                        <option value="CAD">CAD</option>
-                    </select>
+                    <input type="text"
+                        name="salary_currency"
+                        id="edit_salary_currency"
+                        list="currencyListEdit"
+                        placeholder="Type to search (e.g. USD)"
+                        onchange="updatePhpPreview('edit')"
+                        class="w-full px-5 py-3 border border-gray-200 rounded-2xl focus:outline-none focus:border-blue-500">
+                    <datalist id="currencyListEdit"></datalist>
+                    <p id="edit_salary_php_preview" class="text-xs text-gray-400 mt-1"></p>
                 </div>
+
+                <hr class="md:col-span-2 border-gray-200 my-1">
+
+                <!-- Section: Slots & Deadline -->
                 <div>
                     <label class="block text-sm font-medium text-gray-700 mb-1">Slots Available <span class="text-red-500">*</span></label>
                     <input type="number" name="slots_available" required min="1" placeholder="e.g. 50"
@@ -1092,10 +1330,19 @@ if ($degStmt) {
                     <input type="date" name="deadline" required
                         class="w-full px-5 py-3 border border-gray-200 rounded-2xl focus:outline-none focus:border-blue-500">
                 </div>
+
+                <hr class="md:col-span-2 border-gray-200 my-1">
+
+                <!-- Section: Structured Qualifications -->
+                <!--<div class="md:col-span-2">
+                <label class="block text-sm font-medium text-gray-700 mb-1">Qualifications</label>
+                <textarea name="qualifications" rows="4" placeholder="List required qualifications, experience, certifications…"
+                    class="w-full px-5 py-3 border border-gray-200 rounded-2xl focus:outline-none focus:border-blue-500"></textarea>
+            </div>-->
                 <div class="md:col-span-2">
-                    <label class="block text-sm font-medium text-gray-700 mb-1">Qualifications</label>
-                    <textarea name="qualifications" rows="4" placeholder="List required qualifications, experience, certifications…"
-                        class="w-full px-5 py-3 border border-gray-200 rounded-2xl focus:outline-none focus:border-blue-500"></textarea>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Upload RSF PDF</label>
+                    <input type="file" name="rsf_pdf" accept=".pdf"
+                        class="w-full px-5 py-3 border border-gray-200 rounded-2xl focus:outline-none focus:border-blue-500">
                 </div>
                 <div class="md:col-span-2 border border-gray-200 rounded-2xl p-4">
                     <div class="flex items-center justify-between mb-3">
@@ -1110,11 +1357,15 @@ if ($degStmt) {
                     </div>
                     <div id="addQualWrap" class="space-y-2"></div>
                 </div>
-                <div class="md:col-span-2">
-                    <label class="block text-sm font-medium text-gray-700 mb-1">Upload RSF PDF</label>
-                    <input type="file" name="rsf_pdf" accept=".pdf"
-                        class="w-full px-5 py-3 border border-gray-200 rounded-2xl focus:outline-none focus:border-blue-500">
-                </div>
+
+                <hr class="md:col-span-2 border-gray-200 my-1">
+
+                <!-- Section: PDF Upload -->
+
+
+                <hr class="md:col-span-2 border-gray-200 my-1">
+
+                <!-- Section: Requirements -->
                 <div class="md:col-span-2 border border-gray-200 rounded-2xl p-4">
                     <div class="flex items-center justify-between mb-3">
                         <label class="block text-sm font-semibold text-gray-800">Required Requirements / Documents</label>
@@ -1125,6 +1376,10 @@ if ($degStmt) {
                     <p class="text-xs text-gray-500 mb-3">Add the specific requirements for this job order. These are saved in the database per job.</p>
                     <div id="addRequirementsWrap" class="space-y-3"></div>
                 </div>
+
+                <hr class="md:col-span-2 border-gray-200 my-1">
+
+                <!-- Section: Application Questions -->
                 <div class="md:col-span-2 border border-gray-200 rounded-2xl p-4">
                     <div class="flex items-center justify-between mb-3">
                         <label class="block text-sm font-semibold text-gray-800">Job-specific Application Questions</label>
@@ -1135,6 +1390,8 @@ if ($degStmt) {
                     <p class="text-xs text-gray-500 mb-3">Only these questions will be shown for this specific job offer.</p>
                     <div id="addQuestionsWrap" class="space-y-3"></div>
                 </div>
+
+                <!-- Actions -->
                 <div class="md:col-span-2 flex justify-end gap-4 pt-4">
                     <button type="button" onclick="closeAddModal()" class="px-8 py-3 text-gray-600 hover:bg-gray-100 rounded-2xl font-medium">Cancel</button>
                     <button type="submit" class="bg-blue-600 hover:bg-blue-700 text-white px-10 py-3 rounded-2xl font-medium">Save RSF Job Order</button>
@@ -1144,8 +1401,9 @@ if ($degStmt) {
     </div>
 
     <!-- Edit Modal -->
-    <div id="editModal" class="hidden fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-[100]">
-        <div class="bg-white rounded-3xl w-full max-w-4xl mx-4 max-h-[92vh] overflow-auto">
+    <div id="editModal" class="hidden fixed inset-0 z-[300] flex items-center justify-center">
+        <div class="modal-overlay absolute inset-0 bg-black/60 backdrop-blur-sm" onclick="closeEditModal()"></div>
+        <div class="modal-panel relative bg-white rounded-3xl w-full max-w-4xl mx-4 max-h-[calc(100vh-120px)] overflow-auto">
             <div class="p-8 border-b flex items-center justify-between sticky top-0 bg-white z-10 rounded-t-3xl">
                 <h3 class="text-2xl font-semibold text-gray-900">Edit RSF Job Order</h3>
                 <button onclick="closeEditModal()" class="text-gray-400 hover:text-gray-600 text-3xl leading-none">&times;</button>
@@ -1153,11 +1411,18 @@ if ($degStmt) {
             <form id="editForm" class="p-8 grid grid-cols-1 md:grid-cols-2 gap-6">
                 <input type="hidden" name="action" value="edit">
                 <input type="hidden" name="id" id="editId">
+
+                <!-- Section: RSF Number (auto-generated, read-only) -->
                 <div class="md:col-span-2">
-                    <label class="block text-sm font-medium text-gray-700 mb-1">RSF Number <span class="text-red-500">*</span></label>
-                    <input type="text" name="rsf_number" id="edit_rsf_number" required
-                        class="w-full px-5 py-3 border border-gray-200 rounded-2xl focus:outline-none focus:border-blue-500">
+                    <label class="block text-sm font-medium text-gray-700 mb-1">RSF Number</label>
+                    <input type="text" id="edit_rsf_number" readonly disabled
+                        class="w-full px-5 py-3 border border-gray-200 rounded-2xl bg-gray-50 text-gray-500 cursor-not-allowed">
+                    <p class="text-xs text-gray-400 mt-1">Auto-generated on creation and cannot be changed.</p>
                 </div>
+
+                <hr class="md:col-span-2 border-gray-200 my-1">
+
+                <!-- Section: Employer & Worksite -->
                 <div>
                     <label class="block text-sm font-medium text-gray-700 mb-1">Employer Name <span class="text-red-500">*</span></label>
                     <input type="text" name="employer_name" id="edit_employer_name" required
@@ -1168,12 +1433,16 @@ if ($degStmt) {
                     <input type="text" name="worksite_country" id="edit_worksite_country"
                         class="w-full px-5 py-3 border border-gray-200 rounded-2xl focus:outline-none focus:border-blue-500">
                 </div>
+
+                <hr class="md:col-span-2 border-gray-200 my-1">
+
+                <!-- Section: Classification & Position -->
                 <div>
                     <label class="block text-sm font-medium text-gray-700 mb-1">Classification</label>
                     <select name="classification" id="edit_classification" class="w-full px-5 py-3 border border-gray-200 rounded-2xl focus:outline-none focus:border-blue-500">
                         <option value="">Select Classification</option>
                         <option value="Government">Government</option>
-                        <option value="Private">Private</option>
+                        <!-- <option value="Private">Private</option>-->
                     </select>
                 </div>
                 <div class="md:col-span-2">
@@ -1181,6 +1450,10 @@ if ($degStmt) {
                     <input type="text" name="position_title" id="edit_position_title" required
                         class="w-full px-5 py-3 border border-gray-200 rounded-2xl focus:outline-none focus:border-blue-500">
                 </div>
+
+                <hr class="md:col-span-2 border-gray-200 my-1">
+
+                <!-- Section: Job Category / Subcategory -->
                 <div>
                     <label class="block text-sm font-medium text-gray-700 mb-1">Job Category</label>
                     <select id="edit_category_id" onchange="onCategoryChange('edit')"
@@ -1196,28 +1469,38 @@ if ($degStmt) {
                     </select>
                     <p class="text-xs text-gray-400 mt-1">Used for applicant preference matching.</p>
                 </div>
+
+                <hr class="md:col-span-2 border-gray-200 my-1">
+
+                <!-- Section: Salary -->
                 <div>
                     <label class="block text-sm font-medium text-gray-700 mb-1">Salary Min</label>
                     <input type="number" name="salary_min" id="edit_salary_min" step="0.01" min="0"
+                        oninput="updatePhpPreview('edit')"
                         class="w-full px-5 py-3 border border-gray-200 rounded-2xl focus:outline-none focus:border-blue-500">
                 </div>
                 <div>
                     <label class="block text-sm font-medium text-gray-700 mb-1">Salary Max</label>
                     <input type="number" name="salary_max" id="edit_salary_max" step="0.01" min="0"
+                        oninput="updatePhpPreview('edit')"
                         class="w-full px-5 py-3 border border-gray-200 rounded-2xl focus:outline-none focus:border-blue-500">
                 </div>
                 <div>
                     <label class="block text-sm font-medium text-gray-700 mb-1">Salary Currency</label>
-                    <select name="salary_currency" id="edit_salary_currency" class="w-full px-5 py-3 border border-gray-200 rounded-2xl focus:outline-none focus:border-blue-500">
-                        <option value="PHP">PHP</option>
-                        <option value="USD">USD</option>
-                        <option value="EUR">EUR</option>
-                        <option value="SAR">SAR</option>
-                        <option value="TWD">TWD</option>
-                        <option value="JPY">JPY</option>
-                        <option value="CAD">CAD</option>
-                    </select>
+                    <input type="text"
+                        name="salary_currency"
+                        id="edit_salary_currency"
+                        list="currencyListEdit"
+                        placeholder="Type to search (e.g. USD)"
+                        onchange="updatePhpPreview('edit')"
+                        class="w-full px-5 py-3 border border-gray-200 rounded-2xl focus:outline-none focus:border-blue-500">
+                    <datalist id="currencyListEdit"></datalist>
+                    <p id="edit_salary_php_preview" class="text-xs text-gray-400 mt-1"></p>
                 </div>
+
+                <hr class="md:col-span-2 border-gray-200 my-1">
+
+                <!-- Section: Slots & Deadline -->
                 <div>
                     <label class="block text-sm font-medium text-gray-700 mb-1">Slots Available <span class="text-red-500">*</span></label>
                     <input type="number" name="slots_available" id="edit_slots_available" required min="1"
@@ -1228,11 +1511,25 @@ if ($degStmt) {
                     <input type="date" name="deadline" id="edit_deadline" required
                         class="w-full px-5 py-3 border border-gray-200 rounded-2xl focus:outline-none focus:border-blue-500">
                 </div>
+
+                <hr class="md:col-span-2 border-gray-200 my-1">
+
+                <!-- Section: Qualifications (legacy free text) -->
                 <div class="md:col-span-2">
                     <label class="block text-sm font-medium text-gray-700 mb-1">Qualifications</label>
                     <textarea name="qualifications" id="edit_qualifications" rows="4"
                         class="w-full px-5 py-3 border border-gray-200 rounded-2xl focus:outline-none focus:border-blue-500"></textarea>
                 </div>
+
+                <hr class="md:col-span-2 border-gray-200 my-1">
+
+                <!-- Section: PDF Upload -->
+                <div class="md:col-span-2">
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Upload RSF PDF (leave empty to keep current)</label>
+                    <input type="file" name="rsf_pdf" accept=".pdf"
+                        class="w-full px-5 py-3 border border-gray-200 rounded-2xl focus:outline-none focus:border-blue-500">
+                </div>
+                <!-- Section: Structured Qualifications -->
                 <div class="md:col-span-2 border border-gray-200 rounded-2xl p-4">
                     <div class="flex items-center justify-between mb-3">
                         <div>
@@ -1246,11 +1543,14 @@ if ($degStmt) {
                     </div>
                     <div id="editQualWrap" class="space-y-2"></div>
                 </div>
-                <div class="md:col-span-2">
-                    <label class="block text-sm font-medium text-gray-700 mb-1">Upload RSF PDF (leave empty to keep current)</label>
-                    <input type="file" name="rsf_pdf" accept=".pdf"
-                        class="w-full px-5 py-3 border border-gray-200 rounded-2xl focus:outline-none focus:border-blue-500">
-                </div>
+
+                <hr class="md:col-span-2 border-gray-200 my-1">
+
+
+
+                <hr class="md:col-span-2 border-gray-200 my-1">
+
+                <!-- Section: Requirements -->
                 <div class="md:col-span-2 border border-gray-200 rounded-2xl p-4">
                     <div class="flex items-center justify-between mb-3">
                         <label class="block text-sm font-semibold text-gray-800">Required Requirements / Documents</label>
@@ -1261,6 +1561,10 @@ if ($degStmt) {
                     <p class="text-xs text-gray-500 mb-3">Maintain the specific requirements for this selected job order.</p>
                     <div id="editRequirementsWrap" class="space-y-3"></div>
                 </div>
+
+                <hr class="md:col-span-2 border-gray-200 my-1">
+
+                <!-- Section: Application Questions -->
                 <div class="md:col-span-2 border border-gray-200 rounded-2xl p-4">
                     <div class="flex items-center justify-between mb-3">
                         <label class="block text-sm font-semibold text-gray-800">Job-specific Application Questions</label>
@@ -1271,6 +1575,8 @@ if ($degStmt) {
                     <p class="text-xs text-gray-500 mb-3">Maintain application questions for this selected job order.</p>
                     <div id="editQuestionsWrap" class="space-y-3"></div>
                 </div>
+
+                <!-- Actions -->
                 <div class="md:col-span-2 flex justify-end gap-4 pt-4">
                     <button type="button" onclick="closeEditModal()" class="px-8 py-3 text-gray-600 hover:bg-gray-100 rounded-2xl font-medium">Cancel</button>
                     <button type="submit" class="bg-blue-600 hover:bg-blue-700 text-white px-10 py-3 rounded-2xl font-medium">Update RSF Job Order</button>
@@ -1352,6 +1658,32 @@ if ($degStmt) {
         const JOB_CATEGORIES = <?= json_encode($jobCategories) ?>;
         const JOB_SUBCATEGORIES = <?= json_encode($jobSubcategories) ?>;
         const DEGREE_PROGRAMS = <?= json_encode($degreePrograms) ?>;
+        // 1 unit of currency = X PHP, cached daily by the rate-refresh cron job.
+        const EXCHANGE_RATES = <?= json_encode($exchangeRates) ?>;
+
+        function updatePhpPreview(prefix) {
+            const min = parseFloat(document.getElementById(`${prefix}_salary_min`)?.value);
+            const max = parseFloat(document.getElementById(`${prefix}_salary_max`)?.value);
+            const currency = document.getElementById(`${prefix}_salary_currency`)?.value;
+            const preview = document.getElementById(`${prefix}_salary_php_preview`);
+            if (!preview) return;
+
+            if (currency === 'PHP') {
+                preview.textContent = '';
+                return;
+            }
+
+            const rate = EXCHANGE_RATES[currency];
+            if (rate === undefined) {
+                preview.textContent = 'No cached exchange rate yet for ' + currency + ' — will convert on next daily rate refresh.';
+                return;
+            }
+
+            const parts = [];
+            if (!isNaN(min)) parts.push('₱' + Math.round(min * rate).toLocaleString());
+            if (!isNaN(max)) parts.push('₱' + Math.round(max * rate).toLocaleString());
+            preview.textContent = parts.length ? `≈ ${parts.join(' – ')} (today's rate)` : '';
+        }
 
         function populateCategorySelect(selectId) {
             const sel = document.getElementById(selectId);
@@ -1962,7 +2294,15 @@ if ($degStmt) {
             document.getElementById('edit_qualifications').value = job.qualifications || '';
             document.getElementById('edit_salary_min').value = job.salary_min || '';
             document.getElementById('edit_salary_max').value = job.salary_max || '';
-            document.getElementById('edit_salary_currency').value = job.salary_currency || 'PHP';
+
+            // Pre-fill current currency in the searchable input
+            const editCurrencyInput = document.getElementById('edit_salary_currency');
+            if (editCurrencyInput) {
+                editCurrencyInput.value = (job.salary_currency || 'PHP').toUpperCase();
+            }
+
+            updatePhpPreview('edit');
+            updatePhpPreview('edit');
             const editCategoryId = categoryIdForSubcategory(job.subcategory_id);
             document.getElementById('edit_category_id').value = editCategoryId;
             populateSubcategorySelect('edit_subcategory_id', editCategoryId, job.subcategory_id || '');
@@ -2182,6 +2522,8 @@ if ($degStmt) {
             setRequirementRows('addRequirementsWrap', []);
             setQuestionRows('addQuestionsWrap', []);
             setQualRows('addQualWrap', []);
+            const addPreview = document.getElementById('add_salary_php_preview');
+            if (addPreview) addPreview.textContent = '';
             document.getElementById('add_category_id').value = '';
             populateSubcategorySelect('add_subcategory_id', '', '');
             document.getElementById('addModal').classList.remove('hidden');
@@ -2205,6 +2547,74 @@ if ($degStmt) {
                     });
             }
         }
+
+        const AVAILABLE_CURRENCIES = <?= json_encode($allCurrencies) ?>;
+
+        // Populate datalists
+        function populateCurrencyDatalists() {
+            const addList = document.getElementById('currencyList');
+            const editList = document.getElementById('currencyListEdit');
+
+            const options = AVAILABLE_CURRENCIES.map(code =>
+                `<option value="${code}">${code}</option>`
+            ).join('');
+
+            if (addList) addList.innerHTML = options;
+            if (editList) editList.innerHTML = options;
+        }
+
+        function setupCurrencyInputs() {
+            const ids = ['add_salary_currency', 'edit_salary_currency'];
+            ids.forEach(id => {
+                const el = document.getElementById(id);
+                if (el) {
+                    el.addEventListener('blur', function() {
+                        this.value = this.value.toUpperCase().trim();
+                        const prefix = this.id.includes('add') ? 'add' : 'edit';
+                        updatePhpPreview(prefix);
+                    });
+                }
+            });
+        }
+
+        async function refreshExchangeRates() {
+            const btn = event.currentTarget;
+            const original = btn.innerHTML;
+            btn.innerHTML = `<i class="fas fa-spinner fa-spin"></i> Updating...`;
+            btn.disabled = true;
+
+            try {
+                const fd = new FormData();
+                fd.append('action', 'refresh_rates');
+                const res = await fetch('job-orders.php', {
+                    method: 'POST',
+                    body: fd
+                });
+                const data = await res.json();
+
+                if (data.status === 'success') {
+                    Swal.fire({
+                        title: 'Success!',
+                        text: data.message,
+                        icon: 'success',
+                        timer: 2000
+                    }).then(() => location.reload());
+                } else {
+                    throw new Error(data.message);
+                }
+            } catch (err) {
+                Swal.fire('Error', err.message, 'error');
+            } finally {
+                btn.innerHTML = original;
+                btn.disabled = false;
+            }
+        }
+
+        // Initialize
+        document.addEventListener('DOMContentLoaded', () => {
+            populateCurrencyDatalists();
+            setupCurrencyInputs();
+        });
     </script>
     <script type="module" src="../js/main.js"></script>
 </body>

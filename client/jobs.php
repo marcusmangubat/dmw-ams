@@ -52,7 +52,7 @@ $stmt->close();
 // Applicants must set their job preferences once before browsing the job list.
 // Existence of a client_preferences row = preferences have been set.
 $stmt = $database->prepare("
-    SELECT preferred_classification, min_salary_expected, salary_currency,
+    SELECT preferred_classification, min_salary_expected,
            preferred_employment_type, willing_to_relocate
     FROM client_preferences
     WHERE client_id = ?
@@ -216,97 +216,231 @@ function checkQualifications(array $clientData, int $clientAge = null, array $qu
 }
 
 /**
+ * Formats a ranked preference list for display, e.g. "Taiwan (#1), Japan (#2)".
+ */
+function formatPrefList(array $items, string $key): string
+{
+    $parts = [];
+    foreach ($items as $item) {
+        $parts[] = ($item[$key] ?? '') . ' (#' . (int) $item['priority_order'] . ')';
+    }
+    return implode(', ', $parts);
+}
+
+/**
  * Weighted preference-match score (0-100) for a job order against the
- * client's saved preferences. Components with no comparable data on
- * either side are excluded from the denominator so missing data never
- * unfairly penalizes a job.
+ * client's saved preferences, WITH a full per-component breakdown so the
+ * applicant can see exactly why they got the score they did.
+ *
+ * Components with no comparable data on either side are excluded from the
+ * denominator (marked applicable=false) so missing data never unfairly
+ * penalizes a job — but they're still returned so the reason is visible.
  *
  * Weights: preferred country 35, preferred position 30, classification 15, salary 20.
  */
-function computeMatchScore(array $job, ?array $prefs, array $prefCountries, array $prefPositions): int
+function computeMatchDetails(array $job, ?array $prefs, array $prefCountries, array $prefPositions): array
 {
-    $earned = 0.0;
-    $max    = 0.0;
+    $components  = [];
+    $earnedTotal = 0.0;
+    $maxTotal    = 0.0;
 
-    // Preferred country (ranked — priority 1 scores highest)
-    if (!empty($prefCountries)) {
-        $max += 35;
+    // ── Preferred country (ranked — priority 1 scores highest) ──
+    $countryMax     = 35;
+    $countryEarned  = 0.0;
+    $countryMatched = false;
+    $countryDetail  = '';
+    $countryApplic  = !empty($prefCountries);
+    if ($countryApplic) {
         foreach ($prefCountries as $pc) {
             if (!empty($job['worksite_country']) && strcasecmp($job['worksite_country'], $pc['country']) === 0) {
                 $rank = (int) $pc['priority_order'];
-                $earned += max(35 - ($rank - 1) * 12, 10);
+                $countryEarned  = max(35 - ($rank - 1) * 12, 10);
+                $countryMatched = true;
+                $countryDetail  = "Matched your #{$rank} preferred country ({$pc['country']}).";
                 break;
             }
         }
+        if (!$countryMatched) {
+            $jobCountry    = $job['worksite_country'] ?: 'an unspecified location';
+            $countryDetail = "This job is in {$jobCountry}, which isn't among your preferred countries (" . formatPrefList($prefCountries, 'country') . ").";
+        }
+        $earnedTotal += $countryEarned;
+        $maxTotal    += $countryMax;
+    } else {
+        $countryDetail = "You haven't set any preferred countries.";
     }
+    $components[] = [
+        'label'      => 'Preferred Country',
+        'earned'     => round($countryEarned, 1),
+        'max'        => $countryMax,
+        'matched'    => $countryMatched,
+        'applicable' => $countryApplic,
+        'detail'     => $countryDetail,
+    ];
 
-    // Preferred position/subcategory (ranked). Falls back to a fuzzy title
-    // match (partial credit) when the job order hasn't been tagged with a
-    // subcategory_id yet.
-    if (!empty($prefPositions)) {
-        $max += 30;
-        $matched = false;
+    // ── Preferred position/subcategory (ranked, with fuzzy-title fallback) ──
+    $positionMax     = 30;
+    $positionEarned  = 0.0;
+    $positionMatched = false;
+    $positionApplic  = !empty($prefPositions);
+    if ($positionApplic) {
         foreach ($prefPositions as $pp) {
             if (!empty($job['subcategory_id']) && (int) $job['subcategory_id'] === (int) $pp['subcategory_id']) {
                 $rank = (int) $pp['priority_order'];
-                $earned += max(30 - ($rank - 1) * 10, 10);
-                $matched = true;
+                $positionEarned  = max(30 - ($rank - 1) * 10, 10);
+                $positionMatched = true;
+                $positionDetail  = "Matched your #{$rank} preferred position ({$pp['subcategory_name']}).";
                 break;
             }
         }
-        if (!$matched) {
+        if (!$positionMatched) {
             foreach ($prefPositions as $pp) {
                 if (
                     !empty($pp['subcategory_name']) && !empty($job['position_title'])
                     && stripos($job['position_title'], $pp['subcategory_name']) !== false
                 ) {
                     $rank = (int) $pp['priority_order'];
-                    $earned += max(30 - ($rank - 1) * 10, 10) * 0.6;
+                    $positionEarned  = max(30 - ($rank - 1) * 10, 10) * 0.6;
+                    $positionMatched = true;
+                    $positionDetail  = "Your preferred position \"{$pp['subcategory_name']}\" appears in this job's title — partial credit, since this job order hasn't been tagged with a structured position category yet.";
                     break;
                 }
             }
         }
-    }
-
-    // Classification (Government/Private) — "Any" always matches
-    if (!empty($prefs['preferred_classification'])) {
-        $max += 15;
-        if (
-            strcasecmp($prefs['preferred_classification'], 'Any') === 0 ||
-            strcasecmp($prefs['preferred_classification'], $job['classification'] ?? '') === 0
-        ) {
-            $earned += 15;
+        if (!$positionMatched) {
+            $jobTitle       = $job['position_title'] ?: 'this position';
+            $positionDetail = "\"{$jobTitle}\" doesn't match any of your preferred positions (" . formatPrefList($prefPositions, 'subcategory_name') . ").";
         }
+        $earnedTotal += $positionEarned;
+        $maxTotal    += $positionMax;
+    } else {
+        $positionDetail = "You haven't set any preferred positions.";
     }
+    // Ensure these variables are defined to avoid "undefined variable" notices
+    $positionEarned  = $positionEarned  ?? 0.0;
+    $positionMax     = $positionMax     ?? 0;
+    $positionMatched = $positionMatched ?? false;
+    $positionApplic  = $positionApplic  ?? false;
+    $positionDetail  = $positionDetail  ?? "You haven't set any preferred positions.";
 
-    // Minimum expected salary vs job's posted range (only when the job discloses salary)
-    if (
-        !empty($prefs['min_salary_expected']) && (float) $prefs['min_salary_expected'] > 0
-        && (!empty($job['salary_min']) || !empty($job['salary_max']))
-    ) {
-        $max += 20;
-        $want   = (float) $prefs['min_salary_expected'];
-        $jobMax = (float) ($job['salary_max'] ?? $job['salary_min']);
-        $jobMin = (float) ($job['salary_min'] ?? $job['salary_max']);
-        if ($jobMax >= $want) {
-            $earned += 20;
-        } elseif ($jobMin >= $want * 0.8) {
-            $earned += 10;
+    $components[] = [
+        'label'      => 'Preferred Position',
+        'earned'     => round($positionEarned, 1),
+        'max'        => $positionMax,
+        'matched'    => $positionMatched,
+        'applicable' => $positionApplic,
+        'detail'     => $positionDetail,
+    ];
+
+    // ── Classification (Government/Private) — "Any" always matches ──
+    $classMax     = 15;
+    $classEarned  = 0.0;
+    $classMatched = false;
+    $classApplic  = !empty($prefs['preferred_classification']);
+    if ($classApplic) {
+        if (strcasecmp($prefs['preferred_classification'], 'Any') === 0) {
+            $classEarned  = 15;
+            $classMatched = true;
+            $classDetail  = 'You selected "No preference / Any" for classification, so this always matches.';
+        } elseif (strcasecmp($prefs['preferred_classification'], $job['classification'] ?? '') === 0) {
+            $classEarned  = 15;
+            $classMatched = true;
+            $classDetail  = "This is a {$job['classification']} job, matching your preference.";
+        } else {
+            $jobClass    = $job['classification'] ?: 'unspecified';
+            $classDetail = "You prefer {$prefs['preferred_classification']} jobs; this is a {$jobClass} job.";
         }
+        $earnedTotal += $classEarned;
+        $maxTotal    += $classMax;
+    } else {
+        $classDetail = "You haven't set a preferred classification.";
+    }
+    $components[] = [
+        'label'      => 'Classification',
+        'earned'     => $classEarned,
+        'max'        => $classMax,
+        'matched'    => $classMatched,
+        'applicable' => $classApplic,
+        'detail'     => $classDetail,
+    ];
+
+    // ── Minimum expected salary (always PHP) vs job's posted range ──
+    // Applicants only ever enter a PHP figure. Job orders are posted in the
+    // employer's original currency (salary_min/salary_max/salary_currency),
+    // so we compare against the pre-converted salary_min_php/salary_max_php
+    // columns instead — never against the raw foreign-currency figures.
+    // ── Salary Match (PHP) ──
+    $salaryMax     = 20;
+    $salaryEarned  = 0.0;
+    $salaryMatched = false;
+    $prefHasSalary = !empty($prefs['min_salary_expected']) && (float)$prefs['min_salary_expected'] > 0;
+    $jobHasSalary  = !empty($job['salary_min_php']) || !empty($job['salary_max_php']);
+    $salaryApplic  = $prefHasSalary && $jobHasSalary;
+
+    if ($salaryApplic) {
+        $clientMin = (float)$prefs['min_salary_expected'];
+        $jobMinPhp = (float)($job['salary_min_php'] ?? 0);
+        $jobMaxPhp = (float)($job['salary_max_php'] ?? $jobMinPhp);
+
+        $origCurrency = $job['salary_currency'] ?: 'PHP';
+        $origMax      = $job['salary_max'] ?? $job['salary_min'];
+        $origSuffix   = ($origCurrency !== 'PHP' && $origMax)
+            ? " ({$origCurrency} " . number_format($origMax) . ")"
+            : '';
+
+        if ($jobMaxPhp >= $clientMin) {
+            $salaryEarned = 20;
+            $salaryMatched = true;
+            $salaryDetail = "This job pays up to ₱" . number_format($jobMaxPhp) . "{$origSuffix} — meets or exceeds your ₱" . number_format($clientMin) . " expectation.";
+        } elseif ($jobMinPhp >= $clientMin * 0.75) {
+            $salaryEarned = 12;
+            $salaryMatched = true;
+            $salaryDetail = "This job's range is a bit below your expectation but still close (₱" . number_format($jobMinPhp) . "–" . number_format($jobMaxPhp) . ").";
+        } else {
+            $salaryDetail = "This job's maximum (₱" . number_format($jobMaxPhp) . ") is below your minimum expectation of ₱" . number_format($clientMin) . ".";
+        }
+
+        $earnedTotal += $salaryEarned;
+        $maxTotal    += $salaryMax;
+    } else if (!$prefHasSalary) {
+        $salaryDetail = "You have not set a minimum salary expectation.";
+    } else {
+        $salaryDetail = "This job order does not have salary information.";
     }
 
-    if ($max <= 0) {
-        return 50; // no comparable data at all — neutral score
-    }
+    $components[] = [
+        'label'      => 'Expected Salary',
+        'earned'     => $salaryEarned,
+        'max'        => $salaryMax,
+        'matched'    => $salaryMatched,
+        'applicable' => $salaryApplic,
+        'detail'     => $salaryDetail,
+    ];
 
-    return (int) round(min(100, max(0, ($earned / $max) * 100)));
+    $score = $maxTotal > 0
+        ? (int) round(min(100, max(0, ($earnedTotal / $maxTotal) * 100)))
+        : 50; // no comparable data at all — neutral score
+
+    return [
+        'score'      => $score,
+        'earned'     => round($earnedTotal, 1),
+        'max'        => $maxTotal,
+        'components' => $components,
+    ];
 }
 
-// Attach preference-match score to each job order, then rank best matches first
+// Attach preference-match score (+ full breakdown) to each job order, then
+// rank best matches first. $matchBreakdowns is exposed to JS further down
+// so the applicant can see proof of how their score was calculated.
+$matchBreakdowns = [];
 foreach ($jobOrders as &$job) {
-    $job['match_score'] = $has_preferences
-        ? computeMatchScore($job, $clientPrefs, $prefCountries, $prefPositions)
-        : null;
+    if ($has_preferences) {
+        $details = computeMatchDetails($job, $clientPrefs, $prefCountries, $prefPositions);
+        $job['match_score'] = $details['score'];
+        $matchBreakdowns[(int) $job['id']] = $details;
+    } else {
+        $job['match_score'] = null;
+    }
 }
 unset($job);
 
@@ -382,442 +516,24 @@ $initials  = count($parts) >= 2
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800&family=DM+Serif+Display&display=swap" rel="stylesheet">
-
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
     <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
     <link rel="icon" type="image/png" href="https://dmw.gov.ph/images/dmw_tahanan_ng_ofw_colored.png">
 
-    <!-- Shared dashboard stylesheet -->
+    <!-- Shared dashboard stylesheet (defines the --blue / --navy / --card / --border / --text* CSS vars used below) -->
     <link rel="stylesheet" href="../css/dashboard.css">
 
+    <!-- Tailwind (utility classes replace the old page-local <style> block) -->
+    <script src="https://cdn.tailwindcss.com"></script>
+
     <style>
-        /* ── Page content area ── */
-        .main {
-            padding: 14px 14px 0;
-            max-width: 1400px;
-            margin: 0 auto;
-        }
-
-        /* ── Section label ── */
-        .sec-lbl {
-            font-size: 9.5px;
-            font-weight: 700;
-            letter-spacing: .08em;
-            text-transform: uppercase;
-            color: var(--text3);
-            margin-bottom: 8px;
-        }
-
-        /* ── Filter bar ── */
-        .filter-bar {
-            background: var(--card);
-            border: 1px solid var(--border);
-            border-radius: 14px;
-            padding: 14px 16px;
-            margin-bottom: 14px;
-            display: flex;
-            flex-direction: column;
-            gap: 10px;
-        }
-
-        @media (min-width: 640px) {
-            .filter-bar {
-                flex-direction: row;
-                align-items: center;
-            }
-        }
-
-        .filter-search-wrap {
-            flex: 1;
-            position: relative;
-        }
-
-        .filter-search-wrap i {
-            position: absolute;
-            left: 12px;
-            top: 50%;
-            transform: translateY(-50%);
-            color: var(--text3);
-            font-size: 12px;
-            pointer-events: none;
-        }
-
-        .filter-input {
-            width: 100%;
-            padding: 9px 12px 9px 34px;
-            border: 1px solid var(--border);
-            border-radius: 10px;
-            font-family: 'DM Sans', sans-serif;
-            font-size: 13px;
-            font-weight: 500;
-            color: var(--text1);
-            background: var(--surface);
-            outline: none;
-            transition: border-color .2s;
-        }
-
-        .filter-input:focus {
-            border-color: var(--blue-lt);
-            background: #fff;
-        }
-
-        .filter-input::placeholder {
-            color: var(--text3);
-        }
-
-        .filter-select {
-            padding: 9px 12px;
-            border: 1px solid var(--border);
-            border-radius: 10px;
-            font-family: 'DM Sans', sans-serif;
-            font-size: 13px;
-            font-weight: 600;
-            color: var(--text2);
-            background: var(--surface);
-            outline: none;
-            cursor: pointer;
-            transition: border-color .2s;
-        }
-
-        .filter-select:focus {
-            border-color: var(--blue-lt);
-        }
-
-        .filter-btn {
-            padding: 9px 20px;
-            background: var(--blue);
-            color: #fff;
-            border: none;
-            border-radius: 10px;
-            font-family: 'DM Sans', sans-serif;
-            font-size: 13px;
-            font-weight: 700;
-            cursor: pointer;
-            transition: background .2s;
-            white-space: nowrap;
-        }
-
-        .filter-btn:hover {
-            background: #1e40af;
-        }
-
-        /* ── Job cards grid ── */
-        .jobs-grid {
-            display: grid;
-            grid-template-columns: 1fr;
-            gap: 12px;
-            margin-bottom: 16px;
-        }
-
-        @media (min-width: 640px) {
-            .jobs-grid {
-                grid-template-columns: repeat(2, 1fr);
-            }
-        }
-
-        @media (min-width: 1024px) {
-            .jobs-grid {
-                grid-template-columns: repeat(3, 1fr);
-            }
-        }
-
-        /* ── Job card ── */
-        .job-card {
-            background: var(--card);
-            border: 1px solid var(--border);
-            border-radius: 14px;
-            overflow: hidden;
-            transition: transform .2s, box-shadow .2s;
-            position: relative;
-        }
-
-        .job-card::before {
-            content: '';
-            position: absolute;
-            top: 0;
-            left: 0;
-            right: 0;
-            height: 3px;
-            background: var(--blue-lt);
-            border-radius: 14px 14px 0 0;
-        }
-
-        .job-card.gov::before {
-            background: var(--green);
-        }
-
-        .job-card:hover {
-            transform: translateY(-4px);
-            box-shadow: 0 14px 30px rgba(11, 31, 75, .10);
-        }
-
-        .job-card:active {
-            transform: scale(.98);
-        }
-
-        /* Dim cards the client doesn't qualify for */
-        .job-card.not-eligible {
-            opacity: 0.6;
-        }
-
-        .job-card.not-eligible:hover {
-            opacity: 1;
-        }
-
-        .jc-body {
-            padding: 16px;
-        }
-
-        .jc-top {
-            display: flex;
-            justify-content: space-between;
-            align-items: flex-start;
-            gap: 10px;
-            margin-bottom: 12px;
-        }
-
-        .jc-title {
-            font-family: 'DM Serif Display', serif;
-            font-size: 15px;
-            color: var(--text1);
-            line-height: 1.3;
-        }
-
-        .jc-employer {
-            font-size: 11.5px;
-            color: var(--text3);
-            font-weight: 500;
-            margin-top: 3px;
-        }
-
-        .jc-badge {
-            font-size: 9.5px;
-            font-weight: 700;
-            padding: 4px 10px;
-            border-radius: 999px;
-            white-space: nowrap;
-            flex-shrink: 0;
-            letter-spacing: .03em;
-        }
-
-        .badge-gov {
-            background: #d1fae5;
-            color: #065f46;
-        }
-
-        .badge-prv {
-            background: #eff6ff;
-            color: #1e40af;
-        }
-
-        .jc-details {
-            display: flex;
-            flex-direction: column;
-            gap: 7px;
-            margin-bottom: 14px;
-        }
-
-        .jc-detail-row {
-            display: flex;
-            align-items: center;
-            gap: 9px;
-            font-size: 12px;
-            color: var(--text2);
-            font-weight: 500;
-        }
-
-        .jc-detail-row i {
-            width: 16px;
-            text-align: center;
-            color: var(--text3);
-            font-size: 11px;
-            flex-shrink: 0;
-        }
-
-        .jc-detail-row strong {
-            color: var(--text1);
-            font-weight: 700;
-        }
-
-        .jc-actions {
-            display: flex;
-            gap: 8px;
-        }
-
-        .jc-btn {
-            flex: 1;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            gap: 6px;
-            padding: 9px 10px;
-            border-radius: 10px;
-            font-family: 'DM Sans', sans-serif;
-            font-size: 12px;
-            font-weight: 700;
-            cursor: pointer;
-            border: none;
-            text-decoration: none;
-            transition: background .18s, transform .15s;
-        }
-
-        .jc-btn:active {
-            transform: scale(.97);
-        }
-
-        .btn-apply {
-            background: var(--blue);
-            color: #fff;
-        }
-
-        .btn-apply:hover {
-            background: #1e40af;
-        }
-
-        /* ── Already applied state ── */
-        .btn-applied {
-            background: #f1f5f9;
-            color: #64748b;
-            cursor: pointer;
-        }
-
-        .applied-badge {
-            display: inline-flex;
-            align-items: center;
-            gap: 5px;
-            font-size: 9.5px;
-            font-weight: 700;
-            letter-spacing: .03em;
-            padding: 3px 9px;
-            border-radius: 999px;
-            background: #eff6ff;
-            color: #1e40af;
-            white-space: nowrap;
-        }
-
-        /* ── Empty state ── */
-        .empty-state {
-            padding: 60px 20px;
-            text-align: center;
-            grid-column: 1 / -1;
-        }
-
-        .empty-state i {
-            font-size: 36px;
-            color: var(--border);
-            display: block;
-            margin-bottom: 12px;
-        }
-
-        .empty-state p {
-            font-size: 14px;
-            font-weight: 600;
-            color: var(--text3);
-        }
-
-        .empty-state span {
-            font-size: 12px;
-            color: var(--text3);
-            opacity: .7;
-        }
-
-        /* ── Fade-in ── */
-        .fade-in {
-            opacity: 0;
-            transform: translateY(10px);
-            animation: fi2 .4s ease forwards;
-        }
-
+        /* Only what Tailwind's CDN build genuinely can't express statically:
+           the card fade-in keyframes (utility classes reference this name). */
         @keyframes fi2 {
             to {
                 opacity: 1;
                 transform: translateY(0);
             }
-        }
-
-        .d1 {
-            animation-delay: .05s;
-        }
-
-        .d2 {
-            animation-delay: .1s;
-        }
-
-        .d3 {
-            animation-delay: .15s;
-        }
-
-        /* ── Pagination ── */
-        .pagination-wrap {
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            gap: 10px;
-            margin: 8px 0 18px;
-        }
-
-        .pagination-btn {
-            border: 1px solid var(--border);
-            background: var(--card);
-            color: var(--text2);
-            border-radius: 10px;
-            padding: 8px 14px;
-            font-family: 'DM Sans', sans-serif;
-            font-size: 12px;
-            font-weight: 700;
-            cursor: pointer;
-            transition: background .2s, color .2s, border-color .2s;
-        }
-
-        .pagination-btn:hover:not(:disabled) {
-            background: #eff6ff;
-            border-color: #bfdbfe;
-            color: #1e40af;
-        }
-
-        .pagination-btn:disabled {
-            cursor: not-allowed;
-            opacity: .5;
-        }
-
-        .pagination-info {
-            font-size: 12px;
-            font-weight: 600;
-            color: var(--text3);
-            min-width: 90px;
-            text-align: center;
-        }
-
-        .pagination-pages {
-            display: flex;
-            align-items: center;
-            gap: 6px;
-        }
-
-        .pagination-page-btn {
-            min-width: 34px;
-            height: 34px;
-            border: 1px solid var(--border);
-            background: var(--card);
-            color: var(--text2);
-            border-radius: 9px;
-            font-family: 'DM Sans', sans-serif;
-            font-size: 12px;
-            font-weight: 700;
-            cursor: pointer;
-            transition: background .2s, color .2s, border-color .2s;
-        }
-
-        .pagination-page-btn:hover {
-            background: #eff6ff;
-            border-color: #bfdbfe;
-            color: #1e40af;
-        }
-
-        .pagination-page-btn.active {
-            background: #1d4ed8;
-            color: #fff;
-            border-color: #1d4ed8;
         }
 
         .topbar-brand img {
@@ -826,326 +542,13 @@ $initials  = count($parts) >= 2
             display: block;
             background: transparent;
             filter: none;
-
-        }
-
-        /* ── Modals (job preference gate) ── */
-        .modal-overlay {
-            position: fixed;
-            inset: 0;
-            background: rgba(11, 31, 75, .6);
-            backdrop-filter: blur(4px);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            z-index: 600;
-            padding: 16px;
-        }
-
-        .modal-box {
-            background: #fff;
-            border-radius: 18px;
-            width: 100%;
-            max-width: 600px;
-            max-height: 90vh;
-            overflow-y: auto;
-            box-shadow: 0 24px 60px rgba(11, 31, 75, .3);
-        }
-
-        .modal-head {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            padding: 16px 18px;
-            border-bottom: 1px solid var(--border);
-            position: sticky;
-            top: 0;
-            background: #fff;
-            border-radius: 18px 18px 0 0;
-            z-index: 2;
-        }
-
-        .modal-head h3 {
-            font-family: 'DM Serif Display', serif;
-            font-size: 16px;
-            color: var(--navy);
-            display: flex;
-            align-items: center;
-            gap: 9px;
-        }
-
-        .modal-body {
-            padding: 18px;
-        }
-
-        .modal-footer {
-            display: flex;
-            justify-content: flex-end;
-            gap: 8px;
-            padding: 14px 18px;
-            border-top: 1px solid var(--border);
-            background: var(--surface);
-            border-radius: 0 0 18px 18px;
-        }
-
-        .modal-btn {
-            padding: 9px 20px;
-            border-radius: 10px;
-            font-size: 12.5px;
-            font-weight: 700;
-            cursor: pointer;
-            border: none;
-            font-family: 'DM Sans', sans-serif;
-            transition: opacity .18s;
-        }
-
-        .modal-btn:hover {
-            opacity: .88;
-        }
-
-        .modal-btn-secondary {
-            background: var(--surface);
-            border: 1px solid var(--border);
-            color: var(--text2);
-        }
-
-        .modal-btn-primary {
-            background: var(--blue);
-            color: #fff;
-        }
-
-        .modal-btn:disabled {
-            opacity: .5;
-            cursor: not-allowed;
-        }
-
-        /* Step indicator */
-        .profile-steps {
-            display: flex;
-            align-items: center;
-            gap: 0;
-            margin-bottom: 22px;
-        }
-
-        .step-node {
-            width: 28px;
-            height: 28px;
-            border-radius: 50%;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 11px;
-            font-weight: 800;
-            flex-shrink: 0;
-            transition: background .2s, color .2s;
-        }
-
-        .step-node.done {
-            background: var(--blue);
-            color: #fff;
-        }
-
-        .step-node.active {
-            background: var(--navy);
-            color: #fff;
-        }
-
-        .step-node.idle {
-            background: var(--border);
-            color: var(--text3);
-        }
-
-        .step-line {
-            flex: 1;
-            height: 2px;
-            background: var(--border);
-            transition: background .2s;
-        }
-
-        .step-line.done {
-            background: var(--blue);
-        }
-
-        .step-panel {
-            display: none;
-        }
-
-        .step-panel.active {
-            display: block;
-        }
-
-        .pf-grid {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 12px;
-        }
-
-        .pf-full {
-            grid-column: 1 / -1;
-        }
-
-        @media(max-width:500px) {
-            .pf-grid {
-                grid-template-columns: 1fr;
-            }
-        }
-
-        .pf-field label {
-            display: block;
-            font-size: 10.5px;
-            font-weight: 700;
-            color: var(--text2);
-            letter-spacing: .04em;
-            text-transform: uppercase;
-            margin-bottom: 5px;
-        }
-
-        .pf-field input,
-        .pf-field select {
-            width: 100%;
-            padding: 9px 11px;
-            border: 1.5px solid var(--border);
-            border-radius: 9px;
-            font-family: 'DM Sans', sans-serif;
-            font-size: 13px;
-            color: var(--text1);
-            background: #fff;
-            transition: border-color .15s;
-            box-sizing: border-box;
-        }
-
-        .pf-field input:focus,
-        .pf-field select:focus {
-            outline: none;
-            border-color: var(--blue-lt);
-        }
-
-        .pf-field .req {
-            color: #ef4444;
-        }
-
-        .pf-section-heading {
-            font-family: 'DM Serif Display', serif;
-            font-size: 15px;
-            color: var(--navy);
-            margin-bottom: 14px;
-        }
-
-        .pf-subtitle {
-            font-size: 11.5px;
-            color: var(--text3);
-            margin-bottom: 18px;
-            line-height: 1.55;
-        }
-
-        /* Chip picker (preferred countries / positions) */
-        .chip-add-row {
-            display: flex;
-            gap: 8px;
-        }
-
-        .chip-add-row select {
-            flex: 1;
-        }
-
-        .chip-add-btn {
-            padding: 9px 14px;
-            border-radius: 9px;
-            border: 1.5px solid var(--blue);
-            background: #eff6ff;
-            color: var(--blue);
-            font-family: 'DM Sans', sans-serif;
-            font-size: 12.5px;
-            font-weight: 700;
-            cursor: pointer;
-            white-space: nowrap;
-            transition: background .15s;
-        }
-
-        .chip-add-btn:hover {
-            background: #dbeafe;
-        }
-
-        .chip-list {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 8px;
-            margin-top: 10px;
-            min-height: 34px;
-        }
-
-        .chip {
-            display: inline-flex;
-            align-items: center;
-            gap: 7px;
-            background: var(--navy);
-            color: #fff;
-            padding: 6px 8px 6px 12px;
-            border-radius: 999px;
-            font-size: 12px;
-            font-weight: 600;
-        }
-
-        .chip .chip-rank {
-            background: rgba(255, 255, 255, .2);
-            border-radius: 999px;
-            width: 18px;
-            height: 18px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 10px;
-            font-weight: 800;
-        }
-
-        .chip .chip-remove {
-            cursor: pointer;
-            opacity: .75;
-            font-size: 11px;
-        }
-
-        .chip .chip-remove:hover {
-            opacity: 1;
-        }
-
-        /* Lock banner shown while preferences are unset */
-        .pref-lock-banner {
-            background: #eff6ff;
-            border: 1.5px solid #bfdbfe;
-            border-radius: 12px;
-            padding: 14px 16px;
-            margin-bottom: 12px;
-            display: flex;
-            align-items: flex-start;
-            gap: 12px;
-        }
-
-        .pref-lock-banner i {
-            color: var(--blue);
-            font-size: 18px;
-            margin-top: 2px;
-        }
-
-        .pref-lock-banner h4 {
-            font-size: 12.5px;
-            font-weight: 800;
-            color: var(--navy);
-        }
-
-        .pref-lock-banner p {
-            font-size: 11.5px;
-            color: var(--text2);
-            margin-top: 3px;
-            line-height: 1.5;
         }
     </style>
 </head>
 
 <body>
 
-    <!-- ══════════════════════════════════════
-         TOPBAR
-    ══════════════════════════════════════ -->
+    <!--TOPBAR -->
     <header class="topbar">
         <div class="topbar-brand">
             <img src="https://dmw.gov.ph/images/dmw_tahanan_ng_ofw_colored.png" alt="DMW">
@@ -1203,48 +606,47 @@ $initials  = count($parts) >= 2
     <!-- ══════════════════════════════════════
          MAIN CONTENT
     ══════════════════════════════════════ -->
-    <div class="main">
+    <div class="max-w-[1400px] mx-auto px-3.5 pt-3.5 pb-0">
 
         <?php if ($show_pref_modal): ?>
-            <div class="pref-lock-banner fade-in">
-                <i class="fas fa-lock"></i>
+            <div class="opacity-0 translate-y-2.5 [animation:fi2_0.4s_ease_forwards] flex items-start gap-3 bg-[#eff6ff] border border-[#bfdbfe] rounded-xl py-3.5 px-4 mb-3">
+                <i class="fas fa-lock text-[var(--blue)] text-lg mt-0.5"></i>
                 <div>
-                    <h4>Set Your Job Preferences to Unlock Listings</h4>
-                    <p>Tell us your preferred classification, destination countries, and positions so we can show you the best-matching job orders first.</p>
+                    <h4 class="text-[12.5px] font-extrabold text-[var(--navy)]">Set Your Job Preferences to Unlock Listings</h4>
+                    <p class="text-[11.5px] text-[var(--text2)] mt-[3px] leading-relaxed">Tell us your preferred classification, destination countries, and positions so we can show you the best-matching job orders first.</p>
                 </div>
             </div>
         <?php endif; ?>
 
         <!-- Search & Filter bar -->
-        <div class="filter-bar fade-in d1">
-            <div class="filter-search-wrap">
-                <i class="fas fa-search"></i>
-                <input type="text" id="searchInput" class="filter-input"
+        <div class="opacity-0 translate-y-2.5 [animation:fi2_0.4s_ease_forwards] [animation-delay:.05s] bg-[var(--card)] border border-[var(--border)] rounded-[14px] p-3.5 mb-3.5 flex flex-col gap-2.5 sm:flex-row sm:items-center">
+            <div class="flex-1 relative">
+                <i class="fas fa-search absolute left-3 top-1/2 -translate-y-1/2 text-[var(--text3)] text-xs pointer-events-none"></i>
+                <input type="text" id="searchInput"
+                    class="w-full py-[9px] pr-3 pl-[34px] border border-[var(--border)] rounded-[10px] text-[13px] font-medium text-[var(--text1)] bg-[var(--surface)] outline-none transition-colors focus:border-[var(--blue-lt)] focus:bg-white placeholder:text-[var(--text3)]"
                     placeholder="Search position, employer, country, RSF number…">
             </div>
-            <select id="countryFilter" class="filter-select">
+            <select id="countryFilter"
+                class="py-[9px] px-3 border border-[var(--border)] rounded-[10px] text-[13px] font-semibold text-[var(--text2)] bg-[var(--surface)] outline-none cursor-pointer transition-colors focus:border-[var(--blue-lt)]">
                 <option value="">All Countries</option>
                 <?php foreach ($countries as $c): ?>
                     <option value="<?= htmlspecialchars($c) ?>"><?= htmlspecialchars($c) ?></option>
                 <?php endforeach; ?>
             </select>
-            <button class="filter-btn" onclick="applyFilters()">
+            <button onclick="applyFilters()"
+                class="py-[9px] px-5 bg-[var(--blue)] text-white border-none rounded-[10px] text-[13px] font-bold cursor-pointer transition-colors hover:bg-[#1e40af] whitespace-nowrap">
                 <i class="fas fa-search"></i> Search
-            </button>
-            <button class="filter-btn" id="eligibleToggle" onclick="toggleEligibleOnly()"
-                style="background:var(--surface);color:var(--text2);border:1px solid var(--border);">
-                <i class="fas fa-filter"></i> Eligible Only
             </button>
         </div>
 
         <!-- Job Cards -->
-        <div class="jobs-grid fade-in d2" id="jobList">
+        <div class="opacity-0 translate-y-2.5 [animation:fi2_0.4s_ease_forwards] [animation-delay:.1s] grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 mb-4" id="jobList">
 
             <?php if (empty($jobOrders)): ?>
-                <div class="empty-state">
-                    <i class="fas fa-briefcase"></i>
-                    <p>No open job opportunities at the moment.</p>
-                    <span>Please check back later or follow DMW announcements.</span>
+                <div class="py-[60px] px-5 text-center col-span-full">
+                    <i class="fas fa-briefcase text-4xl text-[var(--border)] block mb-3"></i>
+                    <p class="text-sm font-semibold text-[var(--text3)]">No open job opportunities at the moment.</p>
+                    <span class="text-xs text-[var(--text3)] opacity-70">Please check back later or follow DMW announcements.</span>
                 </div>
             <?php else: ?>
                 <?php foreach ($jobOrders as $job):
@@ -1258,93 +660,82 @@ $initials  = count($parts) >= 2
                         ? checkQualifications($clientData, $clientAge, $jobQuals)
                         : ['eligible' => true, 'reasons' => []]; // no structured quals = no restriction
                     $hasQuals = !empty($jobQuals);
+                    $topStripe = $isGov ? 'before:bg-[var(--green)]' : 'before:bg-[var(--blue-lt)]';
                 ?>
-                    <div class="job-card <?= $isGov ? 'gov' : '' ?>"
+                    <div class="relative bg-[var(--card)] border border-[var(--border)] rounded-[14px] overflow-hidden transition-all hover:-translate-y-1 hover:shadow-[0_14px_30px_rgba(11,31,75,0.10)] active:scale-[.98] before:content-[''] before:absolute before:top-0 before:left-0 before:right-0 before:h-[3px] before:rounded-t-[14px] <?= $topStripe ?>"
                         data-eligible="<?= $qualCheck['eligible'] ? '1' : '0' ?>"
                         data-has-quals="<?= $hasQuals ? '1' : '0' ?>"
                         data-reasons="<?= htmlspecialchars(implode('|', $qualCheck['reasons'])) ?>">
-                        <div class="jc-body">
+                        <div class="p-4">
 
-                            <div class="jc-top">
+                            <div class="flex justify-between items-start gap-2.5 mb-3">
                                 <div>
-                                    <div class="jc-title"><?= htmlspecialchars($job['position_title']) ?></div>
-                                    <div class="jc-employer"><?= htmlspecialchars($job['employer_name']) ?></div>
+                                    <div class="font-['DM_Serif_Display'] text-[15px] text-[var(--text1)] leading-[1.3]"><?= htmlspecialchars($job['position_title']) ?></div>
+                                    <div class="text-[11.5px] text-[var(--text3)] font-medium mt-[3px]"><?= htmlspecialchars($job['employer_name']) ?></div>
                                 </div>
-                                <div style="display:flex;flex-direction:column;align-items:flex-end;gap:5px;">
-                                    <span class="jc-badge <?= $isGov ? 'badge-gov' : 'badge-prv' ?>">
+                                <div class="flex flex-col items-end gap-[5px]">
+                                    <span class="text-[9.5px] font-bold py-1 px-2.5 rounded-full whitespace-nowrap flex-shrink-0 tracking-[.03em] <?= $isGov ? 'bg-[#d1fae5] text-[#065f46]' : 'bg-[#eff6ff] text-[#1e40af]' ?>">
                                         <?= htmlspecialchars($job['classification']) ?>
                                     </span>
                                     <?php if ($has_preferences && $job['match_score'] !== null):
                                         $score = (int) $job['match_score'];
                                         if ($score >= 70) {
-                                            $scoreBg = '#d1fae5';
-                                            $scoreFg = '#065f46';
+                                            $scoreClasses = 'bg-[#d1fae5] text-[#065f46]';
                                         } elseif ($score >= 40) {
-                                            $scoreBg = '#fef9c3';
-                                            $scoreFg = '#854d0e';
+                                            $scoreClasses = 'bg-[#fef9c3] text-[#854d0e]';
                                         } else {
-                                            $scoreBg = '#f3f4f6';
-                                            $scoreFg = '#4b5563';
+                                            $scoreClasses = 'bg-[#f3f4f6] text-[#4b5563]';
                                         }
                                     ?>
-                                        <span class="applied-badge" style="background:<?= $scoreBg ?>;color:<?= $scoreFg ?>;" title="Based on your saved job preferences">
-                                            <i class="fas fa-star"></i> <?= $score ?>% Match
+                                        <span class="inline-flex items-center gap-[5px] text-[9.5px] font-bold tracking-[.03em] py-[3px] px-2.5 rounded-full whitespace-nowrap cursor-pointer <?= $scoreClasses ?>" onclick="showMatchBreakdown(<?= (int) $job['id'] ?>)" title="Click to see why you got this score">
+                                            <i class="fas fa-star"></i> <?= $score ?>% Match <i class="fas fa-circle-info ml-[2px] opacity-70"></i>
                                         </span>
                                     <?php endif; ?>
                                     <?php if ($hasApplied): ?>
-                                        <span class="applied-badge">
+                                        <span class="inline-flex items-center gap-[5px] text-[9.5px] font-bold tracking-[.03em] py-[3px] px-2.5 rounded-full whitespace-nowrap bg-[#eff6ff] text-[#1e40af]">
                                             <i class="fas fa-circle-check"></i> Applied
                                         </span>
                                     <?php elseif ($isFull): ?>
-                                        <span class="applied-badge" style="background:#fef2f2;color:#b91c1c;">
+                                        <span class="inline-flex items-center gap-[5px] text-[9.5px] font-bold tracking-[.03em] py-[3px] px-2.5 rounded-full whitespace-nowrap bg-[#fef2f2] text-[#b91c1c]">
                                             <i class="fas fa-ban"></i> No Slots
-                                        </span>
-                                    <?php elseif ($hasQuals && $qualCheck['eligible']): ?>
-                                        <span class="applied-badge" style="background:#d1fae5;color:#065f46;">
-                                            <i class="fas fa-circle-check"></i> You Qualify
-                                        </span>
-                                    <?php elseif ($hasQuals && !$qualCheck['eligible']): ?>
-                                        <span class="applied-badge" style="background:#fffbeb;color:#92400e;"
-                                            title="<?= htmlspecialchars(implode(' · ', $qualCheck['reasons'])) ?>">
-                                            <i class="fas fa-triangle-exclamation"></i> May Not Qualify
                                         </span>
                                     <?php endif; ?>
                                 </div>
                             </div>
 
-                            <div class="jc-details">
-                                <div class="jc-detail-row">
-                                    <i class="fas fa-location-dot"></i>
+                            <div class="flex flex-col gap-[7px] mb-3.5">
+                                <div class="flex items-center gap-[9px] text-xs text-[var(--text2)] font-medium">
+                                    <i class="fas fa-location-dot w-4 text-center text-[var(--text3)] text-[11px] flex-shrink-0"></i>
                                     <span><?= htmlspecialchars($job['worksite_country'] ?: 'Not specified') ?></span>
                                 </div>
-                                <div class="jc-detail-row">
-                                    <i class="fas fa-users"></i>
-                                    <span><strong><?= number_format($slotsLeft) ?></strong> slot<?= $slotsLeft !== 1 ? 's' : '' ?> available</span>
+                                <div class="flex items-center gap-[9px] text-xs text-[var(--text2)] font-medium">
+                                    <i class="fas fa-users w-4 text-center text-[var(--text3)] text-[11px] flex-shrink-0"></i>
+                                    <span><strong class="text-[var(--text1)] font-bold"><?= number_format($slotsLeft) ?></strong> slot<?= $slotsLeft !== 1 ? 's' : '' ?> available</span>
                                 </div>
-                                <div class="jc-detail-row">
-                                    <i class="fas fa-calendar-alt"></i>
-                                    <span>Deadline: <strong><?= $job['deadline'] ? date('M d, Y', strtotime($job['deadline'])) : 'Open' ?></strong></span>
+                                <div class="flex items-center gap-[9px] text-xs text-[var(--text2)] font-medium">
+                                    <i class="fas fa-calendar-alt w-4 text-center text-[var(--text3)] text-[11px] flex-shrink-0"></i>
+                                    <span>Deadline: <strong class="text-[var(--text1)] font-bold"><?= $job['deadline'] ? date('M d, Y', strtotime($job['deadline'])) : 'Open' ?></strong></span>
                                 </div>
                                 <?php if (!empty($job['rsf_number'])): ?>
-                                    <div class="jc-detail-row">
-                                        <i class="fas fa-hashtag"></i>
+                                    <div class="flex items-center gap-[9px] text-xs text-[var(--text2)] font-medium">
+                                        <i class="fas fa-hashtag w-4 text-center text-[var(--text3)] text-[11px] flex-shrink-0"></i>
                                         <span><?= htmlspecialchars($job['rsf_number']) ?></span>
                                     </div>
                                 <?php endif; ?>
                             </div>
 
-                            <div class="jc-actions">
+                            <div class="flex gap-2">
                                 <?php if ($hasApplied): ?>
-                                    <button type="button" class="jc-btn btn-applied" onclick="alreadyAppliedForJob()" title="You have already applied for this position">
+                                    <button type="button" class="flex-1 flex items-center justify-center gap-1.5 py-[9px] px-2.5 rounded-[10px] text-xs font-bold cursor-pointer border-none transition-all active:scale-[.97] bg-[#f1f5f9] text-[#64748b]" onclick="alreadyAppliedForJob()" title="You have already applied for this position">
                                         <i class="fas fa-circle-check"></i> Already Applied
                                     </button>
                                 <?php elseif ($isFull): ?>
-                                    <button type="button" class="jc-btn btn-applied" onclick="noSlotsAvailable()" title="No available slots for this job">
+                                    <button type="button" class="flex-1 flex items-center justify-center gap-1.5 py-[9px] px-2.5 rounded-[10px] text-xs font-bold cursor-pointer border-none transition-all active:scale-[.97] bg-[#f1f5f9] text-[#64748b]" onclick="noSlotsAvailable()" title="No available slots for this job">
                                         <i class="fas fa-ban"></i> No Slots Available
                                     </button>
                                 <?php else: ?>
                                     <!-- Not yet applied: normal Apply button -->
-                                    <button class="jc-btn btn-apply" onclick="applyForJob(<?= (int)$job['id'] ?>)">
+                                    <button class="flex-1 flex items-center justify-center gap-1.5 py-[9px] px-2.5 rounded-[10px] text-xs font-bold cursor-pointer border-none transition-all active:scale-[.97] bg-[var(--blue)] text-white hover:bg-[#1e40af]" onclick="applyForJob(<?= (int)$job['id'] ?>)">
                                         <i class="fas fa-paper-plane"></i> Apply Now
                                     </button>
                                 <?php endif; ?>
@@ -1357,13 +748,15 @@ $initials  = count($parts) >= 2
 
         </div>
 
-        <div class="pagination-wrap fade-in d3" id="paginationWrap" style="display:none;">
-            <button type="button" class="pagination-btn" id="prevPageBtn" onclick="changePage(-1)">
+        <div class="opacity-0 translate-y-2.5 [animation:fi2_0.4s_ease_forwards] [animation-delay:.15s] flex items-center justify-center gap-2.5 my-2 mb-[18px] hidden" id="paginationWrap">
+            <button type="button" id="prevPageBtn" onclick="changePage(-1)"
+                class="border border-[var(--border)] bg-[var(--card)] text-[var(--text2)] rounded-[10px] py-2 px-3.5 text-xs font-bold cursor-pointer transition-colors [&:not(:disabled):hover]:bg-[#eff6ff] [&:not(:disabled):hover]:border-[#bfdbfe] [&:not(:disabled):hover]:text-[#1e40af] disabled:cursor-not-allowed disabled:opacity-50">
                 <i class="fas fa-angle-left"></i> Previous
             </button>
-            <div class="pagination-pages" id="pageNumbers"></div>
-            <span class="pagination-info" id="pageInfo">Page 1 of 1</span>
-            <button type="button" class="pagination-btn" id="nextPageBtn" onclick="changePage(1)">
+            <div class="flex items-center gap-1.5" id="pageNumbers"></div>
+            <span class="text-xs font-semibold text-[var(--text3)] min-w-[90px] text-center" id="pageInfo">Page 1 of 1</span>
+            <button type="button" id="nextPageBtn" onclick="changePage(1)"
+                class="border border-[var(--border)] bg-[var(--card)] text-[var(--text2)] rounded-[10px] py-2 px-3.5 text-xs font-bold cursor-pointer transition-colors [&:not(:disabled):hover]:bg-[#eff6ff] [&:not(:disabled):hover]:border-[#bfdbfe] [&:not(:disabled):hover]:text-[#1e40af] disabled:cursor-not-allowed disabled:opacity-50">
                 Next <i class="fas fa-angle-right"></i>
             </button>
         </div>
@@ -1418,69 +811,62 @@ $initials  = count($parts) >= 2
     </div>
 
     <?php if ($show_pref_modal): ?>
-        <div id="prefModal" class="modal-overlay">
-            <div class="modal-box">
-                <div class="modal-head">
-                    <h3>
-                        <span style="width:32px;height:32px;border-radius:9px;background:#eff6ff;display:flex;align-items:center;justify-content:center;color:var(--blue);font-size:14px;flex-shrink:0;">
+        <div id="prefModal" class="fixed inset-0 bg-[rgba(11,31,75,0.6)] backdrop-blur-sm flex items-center justify-center z-[600] p-4">
+            <div class="bg-white rounded-[18px] w-full max-w-[600px] max-h-[90vh] overflow-y-auto shadow-[0_24px_60px_rgba(11,31,75,0.3)]">
+                <div class="flex items-center justify-between py-4 px-[18px] border-b border-[var(--border)] sticky top-0 bg-white rounded-t-[18px] z-[2]">
+                    <h3 class="font-['DM_Serif_Display'] text-base text-[var(--navy)] flex items-center gap-[9px]">
+                        <span class="w-8 h-8 rounded-[9px] bg-[#eff6ff] flex items-center justify-center text-[var(--blue)] text-sm flex-shrink-0">
                             <i class="fas fa-sliders"></i>
                         </span>
                         Set Your Job Preferences
                     </h3>
                     <!-- No close button — must complete before browsing -->
                 </div>
-                <div class="modal-body">
+                <div class="p-[18px]">
 
-                    <div class="profile-steps" id="prefStepIndicator">
-                        <div class="step-node active" id="pn1">1</div>
-                        <div class="step-line" id="pl1"></div>
-                        <div class="step-node idle" id="pn2">2</div>
+                    <div class="flex items-center gap-0 mb-[22px]" id="prefStepIndicator">
+                        <div class="w-7 h-7 rounded-full flex items-center justify-center text-[11px] font-extrabold flex-shrink-0 transition-colors bg-[var(--navy)] text-white" id="pn1">1</div>
+                        <div class="flex-1 h-0.5 bg-[var(--border)] transition-colors" id="pl1"></div>
+                        <div class="w-7 h-7 rounded-full flex items-center justify-center text-[11px] font-extrabold flex-shrink-0 transition-colors bg-[var(--border)] text-[var(--text3)]" id="pn2">2</div>
                     </div>
 
                     <form id="prefForm">
 
                         <!-- ── STEP 1: Job & Salary Preferences ── -->
-                        <div class="step-panel active" id="prefStepPanel1">
-                            <p class="pf-section-heading">Job &amp; Salary Preferences</p>
-                            <p class="pf-subtitle">This helps us rank job orders by how well they match what you're looking for. It doesn't limit which jobs you can apply to.</p>
-                            <div class="pf-grid">
-                                <div class="pf-field">
-                                    <label>Preferred Classification <span class="req">*</span></label>
-                                    <select name="preferred_classification" required>
+                        <div class="block" id="prefStepPanel1">
+                            <p class="font-['DM_Serif_Display'] text-[15px] text-[var(--navy)] mb-3.5">Job &amp; Salary Preferences</p>
+                            <p class="text-[11.5px] text-[var(--text3)] mb-[18px] leading-relaxed">This helps us rank job orders by how well they match what you're looking for. It doesn't limit which jobs you can apply to.</p>
+                            <div class="grid grid-cols-1 min-[500px]:grid-cols-2 gap-3">
+                                <div>
+                                    <label class="block text-[10.5px] font-bold text-[var(--text2)] tracking-[.04em] uppercase mb-[5px]">Preferred Classification <span class="text-red-500">*</span></label>
+                                    <select name="preferred_classification" required
+                                        class="w-full py-[9px] px-[11px] border-[1.5px] border-[var(--border)] rounded-[9px] text-[13px] text-[var(--text1)] bg-white transition-colors outline-none focus:border-[var(--blue-lt)]">
                                         <option value="">Select…</option>
                                         <option value="Government">Government</option>
                                         <option value="Private">Private</option>
                                         <option value="Any">No preference / Any</option>
                                     </select>
                                 </div>
-                                <div class="pf-field">
-                                    <label>Preferred Employment Type <span class="req">*</span></label>
-                                    <select name="preferred_employment_type" required>
+                                <div>
+                                    <label class="block text-[10.5px] font-bold text-[var(--text2)] tracking-[.04em] uppercase mb-[5px]">Preferred Employment Type <span class="text-red-500">*</span></label>
+                                    <select name="preferred_employment_type" required
+                                        class="w-full py-[9px] px-[11px] border-[1.5px] border-[var(--border)] rounded-[9px] text-[13px] text-[var(--text1)] bg-white transition-colors outline-none focus:border-[var(--blue-lt)]">
                                         <option value="">Select…</option>
                                         <option value="Full-time">Full-time</option>
                                         <option value="Part-time">Part-time</option>
                                         <option value="Contract">Contract</option>
                                     </select>
                                 </div>
-                                <div class="pf-field">
-                                    <label>Minimum Expected Salary</label>
-                                    <input type="number" name="min_salary_expected" placeholder="e.g. 20000" min="0" step="0.01">
+                                <div class="col-span-full">
+                                    <label class="block text-[10.5px] font-bold text-[var(--text2)] tracking-[.04em] uppercase mb-[5px]">Minimum Expected Salary (₱ PHP)</label>
+                                    <input type="number" name="min_salary_expected" placeholder="e.g. 20000" min="0" step="0.01"
+                                        class="w-full py-[9px] px-[11px] border-[1.5px] border-[var(--border)] rounded-[9px] text-[13px] text-[var(--text1)] bg-white transition-colors outline-none focus:border-[var(--blue-lt)]">
+                                    <p class="text-[11.5px] text-[var(--text3)] mt-1 leading-relaxed">Enter this in Philippine Peso. Job orders posted in other currencies are automatically converted to PHP for comparison.</p>
                                 </div>
-                                <div class="pf-field">
-                                    <label>Currency</label>
-                                    <select name="salary_currency">
-                                        <option value="PHP">PHP</option>
-                                        <option value="USD">USD</option>
-                                        <option value="TWD">TWD</option>
-                                        <option value="JPY">JPY</option>
-                                        <option value="SAR">SAR</option>
-                                        <option value="AED">AED</option>
-                                        <option value="EUR">EUR</option>
-                                    </select>
-                                </div>
-                                <div class="pf-field pf-full">
-                                    <label>Willing to Relocate Abroad <span class="req">*</span></label>
-                                    <select name="willing_to_relocate" required>
+                                <div class="col-span-full">
+                                    <label class="block text-[10.5px] font-bold text-[var(--text2)] tracking-[.04em] uppercase mb-[5px]">Willing to Relocate Abroad <span class="text-red-500">*</span></label>
+                                    <select name="willing_to_relocate" required
+                                        class="w-full py-[9px] px-[11px] border-[1.5px] border-[var(--border)] rounded-[9px] text-[13px] text-[var(--text1)] bg-white transition-colors outline-none focus:border-[var(--blue-lt)]">
                                         <option value="">Select…</option>
                                         <option value="1">Yes</option>
                                         <option value="0">No</option>
@@ -1490,30 +876,33 @@ $initials  = count($parts) >= 2
                         </div>
 
                         <!-- ── STEP 2: Preferred Countries & Positions ── -->
-                        <div class="step-panel" id="prefStepPanel2">
-                            <p class="pf-section-heading">Preferred Destinations &amp; Positions</p>
-                            <p class="pf-subtitle">Add up to 3 of each, in order of preference. The first one you add is your top priority.</p>
+                        <div class="hidden" id="prefStepPanel2">
+                            <p class="font-['DM_Serif_Display'] text-[15px] text-[var(--navy)] mb-3.5">Preferred Destinations &amp; Positions</p>
+                            <p class="text-[11.5px] text-[var(--text3)] mb-[18px] leading-relaxed">Add up to 3 of each, in order of preference. The first one you add is your top priority.</p>
 
-                            <div class="pf-field pf-full">
-                                <label>Preferred Countries <span class="req">*</span></label>
-                                <div class="chip-add-row">
-                                    <select id="countrySelect">
+                            <div class="col-span-full">
+                                <label class="block text-[10.5px] font-bold text-[var(--text2)] tracking-[.04em] uppercase mb-[5px]">Preferred Countries <span class="text-red-500">*</span></label>
+                                <div class="flex gap-2">
+                                    <select id="countrySelect"
+                                        class="flex-1 py-[9px] px-[11px] border-[1.5px] border-[var(--border)] rounded-[9px] text-[13px] text-[var(--text1)] bg-white transition-colors outline-none focus:border-[var(--blue-lt)]">
                                         <option value="">Select a country…</option>
                                         <?php foreach ($prefCountryOptions as $c): ?>
                                             <option value="<?= htmlspecialchars($c, ENT_QUOTES) ?>"><?= htmlspecialchars($c) ?></option>
                                         <?php endforeach; ?>
                                     </select>
-                                    <button type="button" class="chip-add-btn" id="addCountryBtn">
+                                    <button type="button" id="addCountryBtn"
+                                        class="py-[9px] px-[14px] rounded-[9px] border-[1.5px] border-[var(--blue)] bg-[#eff6ff] text-[var(--blue)] text-[12.5px] font-bold cursor-pointer whitespace-nowrap transition-colors hover:bg-[#dbeafe]">
                                         <i class="fas fa-plus"></i> Add
                                     </button>
                                 </div>
-                                <div class="chip-list" id="countryChips"></div>
+                                <div class="flex flex-wrap gap-2 mt-[10px] min-h-[34px]" id="countryChips"></div>
                             </div>
 
-                            <div class="pf-field pf-full" style="margin-top:16px;">
-                                <label>Preferred Positions <span class="req">*</span></label>
-                                <div class="chip-add-row">
-                                    <select id="positionSelect">
+                            <div class="col-span-full mt-4">
+                                <label class="block text-[10.5px] font-bold text-[var(--text2)] tracking-[.04em] uppercase mb-[5px]">Preferred Positions <span class="text-red-500">*</span></label>
+                                <div class="flex gap-2">
+                                    <select id="positionSelect"
+                                        class="flex-1 py-[9px] px-[11px] border-[1.5px] border-[var(--border)] rounded-[9px] text-[13px] text-[var(--text1)] bg-white transition-colors outline-none focus:border-[var(--blue-lt)]">
                                         <option value="">Select a position…</option>
                                         <?php foreach ($prefCategories as $cat): if (empty($cat['subs'])) continue; ?>
                                             <optgroup label="<?= htmlspecialchars($cat['name']) ?>">
@@ -1523,11 +912,12 @@ $initials  = count($parts) >= 2
                                             </optgroup>
                                         <?php endforeach; ?>
                                     </select>
-                                    <button type="button" class="chip-add-btn" id="addPositionBtn">
+                                    <button type="button" id="addPositionBtn"
+                                        class="py-[9px] px-[14px] rounded-[9px] border-[1.5px] border-[var(--blue)] bg-[#eff6ff] text-[var(--blue)] text-[12.5px] font-bold cursor-pointer whitespace-nowrap transition-colors hover:bg-[#dbeafe]">
                                         <i class="fas fa-plus"></i> Add
                                     </button>
                                 </div>
-                                <div class="chip-list" id="positionChips"></div>
+                                <div class="flex flex-wrap gap-2 mt-[10px] min-h-[34px]" id="positionChips"></div>
                             </div>
 
                             <!-- Hidden inputs populated from chips right before submit -->
@@ -1536,14 +926,16 @@ $initials  = count($parts) >= 2
 
                     </form><!-- /prefForm -->
 
-                    <div id="prefError" style="display:none;background:#fee2e2;border:1px solid #fecaca;border-radius:9px;padding:10px 13px;margin-top:12px;font-size:12px;font-weight:600;color:#991b1b;"></div>
+                    <div id="prefError" class="hidden bg-red-100 border border-red-200 rounded-[9px] py-[10px] px-[13px] mt-3 text-xs font-semibold text-red-800"></div>
 
                 </div><!-- /modal-body -->
-                <div class="modal-footer" id="prefModalFooter">
-                    <button class="modal-btn modal-btn-secondary" id="prefBackBtn" style="display:none;" onclick="prefStep(-1)">
+                <div class="flex justify-end gap-2 py-[14px] px-[18px] border-t border-[var(--border)] bg-[var(--surface)] rounded-b-[18px]" id="prefModalFooter">
+                    <button id="prefBackBtn" style="display:none;" onclick="prefStep(-1)"
+                        class="py-[9px] px-5 rounded-[10px] text-[12.5px] font-bold cursor-pointer border-none transition-opacity hover:opacity-[.88] bg-[var(--surface)] border border-[var(--border)] text-[var(--text2)] disabled:opacity-50 disabled:cursor-not-allowed">
                         <i class="fas fa-arrow-left"></i> Back
                     </button>
-                    <button class="modal-btn modal-btn-primary" id="prefNextBtn" onclick="prefStep(1)">
+                    <button id="prefNextBtn" onclick="prefStep(1)"
+                        class="py-[9px] px-5 rounded-[10px] text-[12.5px] font-bold cursor-pointer border-none transition-opacity hover:opacity-[.88] bg-[var(--blue)] text-white disabled:opacity-50 disabled:cursor-not-allowed">
                         Next &nbsp;<i class="fas fa-arrow-right"></i>
                     </button>
                 </div>
@@ -1558,15 +950,23 @@ $initials  = count($parts) >= 2
                 let countryChips = []; // ordered array of country strings
                 let positionChips = []; // ordered array of {id, name}
 
+                // Tailwind class sets for the JS-driven step indicator / chips / pagination
+                const STEP_NODE_BASE = 'w-7 h-7 rounded-full flex items-center justify-center text-[11px] font-extrabold flex-shrink-0 transition-colors';
+                const STEP_NODE_DONE = STEP_NODE_BASE + ' bg-[var(--blue)] text-white';
+                const STEP_NODE_ACTIVE = STEP_NODE_BASE + ' bg-[var(--navy)] text-white';
+                const STEP_NODE_IDLE = STEP_NODE_BASE + ' bg-[var(--border)] text-[var(--text3)]';
+                const STEP_LINE_BASE = 'flex-1 h-0.5 bg-[var(--border)] transition-colors';
+                const STEP_LINE_DONE = 'flex-1 h-0.5 bg-[var(--blue)] transition-colors';
+
                 function updateStepUI() {
                     for (let i = 1; i <= TOTAL_STEPS; i++) {
-                        document.getElementById('prefStepPanel' + i).classList.toggle('active', i === currentStep);
+                        document.getElementById('prefStepPanel' + i).classList.toggle('hidden', i !== currentStep);
                         const node = document.getElementById('pn' + i);
-                        if (i < currentStep) node.className = 'step-node done';
-                        else if (i === currentStep) node.className = 'step-node active';
-                        else node.className = 'step-node idle';
+                        if (i < currentStep) node.className = STEP_NODE_DONE;
+                        else if (i === currentStep) node.className = STEP_NODE_ACTIVE;
+                        else node.className = STEP_NODE_IDLE;
                     }
-                    document.getElementById('pl1').className = 'step-line' + (currentStep > 1 ? ' done' : '');
+                    document.getElementById('pl1').className = currentStep > 1 ? STEP_LINE_DONE : STEP_LINE_BASE;
                     document.getElementById('prefBackBtn').style.display = currentStep > 1 ? '' : 'none';
                     const nextBtn = document.getElementById('prefNextBtn');
                     nextBtn.innerHTML = currentStep === TOTAL_STEPS ?
@@ -1577,11 +977,11 @@ $initials  = count($parts) >= 2
                 function showError(msg) {
                     const el = document.getElementById('prefError');
                     el.textContent = msg;
-                    el.style.display = 'block';
+                    el.classList.remove('hidden');
                 }
 
                 function hideError() {
-                    document.getElementById('prefError').style.display = 'none';
+                    document.getElementById('prefError').classList.add('hidden');
                 }
 
                 function validateStep(step) {
@@ -1615,9 +1015,9 @@ $initials  = count($parts) >= 2
                     cWrap.innerHTML = '';
                     countryChips.forEach((country, idx) => {
                         const chip = document.createElement('span');
-                        chip.className = 'chip';
-                        chip.innerHTML = `<span class="chip-rank">${idx + 1}</span> ${country} <i class="fas fa-xmark chip-remove" data-idx="${idx}"></i>`;
-                        chip.querySelector('.chip-remove').addEventListener('click', () => {
+                        chip.className = 'inline-flex items-center gap-[7px] bg-[var(--navy)] text-white py-[6px] pr-[6px] pl-3 rounded-full text-xs font-semibold';
+                        chip.innerHTML = `<span class="bg-white/20 rounded-full w-[18px] h-[18px] flex items-center justify-center text-[10px] font-extrabold">${idx + 1}</span> ${country} <i class="fas fa-xmark cursor-pointer opacity-75 hover:opacity-100 text-[11px]" data-idx="${idx}"></i>`;
+                        chip.querySelector('.fa-xmark').addEventListener('click', () => {
                             countryChips.splice(idx, 1);
                             renderChips();
                         });
@@ -1628,9 +1028,9 @@ $initials  = count($parts) >= 2
                     pWrap.innerHTML = '';
                     positionChips.forEach((pos, idx) => {
                         const chip = document.createElement('span');
-                        chip.className = 'chip';
-                        chip.innerHTML = `<span class="chip-rank">${idx + 1}</span> ${pos.name} <i class="fas fa-xmark chip-remove" data-idx="${idx}"></i>`;
-                        chip.querySelector('.chip-remove').addEventListener('click', () => {
+                        chip.className = 'inline-flex items-center gap-[7px] bg-[var(--navy)] text-white py-[6px] pr-[6px] pl-3 rounded-full text-xs font-semibold';
+                        chip.innerHTML = `<span class="bg-white/20 rounded-full w-[18px] h-[18px] flex items-center justify-center text-[10px] font-extrabold">${idx + 1}</span> ${pos.name} <i class="fas fa-xmark cursor-pointer opacity-75 hover:opacity-100 text-[11px]" data-idx="${idx}"></i>`;
+                        chip.querySelector('.fa-xmark').addEventListener('click', () => {
                             positionChips.splice(idx, 1);
                             renderChips();
                         });
@@ -1742,6 +1142,55 @@ $initials  = count($parts) >= 2
                 day: 'numeric'
             }).toUpperCase();
 
+        /* Preference-match score breakdown — proof of how each job's % was calculated */
+        <?php if ($has_preferences): ?>
+            const MATCH_BREAKDOWNS = <?= json_encode($matchBreakdowns, JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP) ?>;
+
+            function showMatchBreakdown(jobId) {
+                const data = MATCH_BREAKDOWNS[jobId];
+                if (!data) return;
+
+                const rows = data.components.map(c => {
+                    let icon, iconColor;
+                    if (!c.applicable) {
+                        icon = '−';
+                        iconColor = '#9ca3af';
+                    } else if (c.matched) {
+                        icon = '✓';
+                        iconColor = '#059669';
+                    } else {
+                        icon = '✕';
+                        iconColor = '#dc2626';
+                    }
+                    return `
+                    <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid #f1f5f9;">
+                        <div style="display:flex;align-items:center;gap:8px;">
+                            <span style="color:${iconColor};font-weight:800;width:16px;text-align:center;">${icon}</span>
+                            <span style="font-weight:700;font-size:12.5px;color:#1f2937;">${c.label}</span>
+                        </div>
+                        <span style="font-size:12px;font-weight:700;color:#4b5563;">${c.applicable ? c.earned + '/' + c.max + ' pts' : 'not scored'}</span>
+                    </div>
+                    <div style="font-size:11.5px;color:#6b7280;line-height:1.5;padding:2px 0 8px 24px;">${c.detail}</div>
+                `;
+                }).join('');
+
+                Swal.fire({
+                    title: `${data.score}% Match`,
+                    html: `
+                    <div style="text-align:left;">
+                        ${rows}
+                        <p style="margin-top:10px;font-size:11px;color:#9ca3af;line-height:1.5;">
+                            Score = (points earned ÷ points scored) × 100. Components marked "not scored" have no comparable data yet (e.g. salary not disclosed) and are excluded so they don't count against you.
+                        </p>
+                    </div>
+                `,
+                    confirmButtonColor: '#1d4ed8',
+                    confirmButtonText: 'Got it',
+                    width: 440
+                });
+            }
+        <?php endif; ?>
+
         function alreadyAppliedForJob() {
             Swal.fire({
                 icon: 'info',
@@ -1785,49 +1234,29 @@ $initials  = count($parts) >= 2
         }
 
         /* Search + filter */
-        const JOBS_PER_PAGE = 5;
+        const JOBS_PER_PAGE = 6;
         let currentPage = 1;
 
-        let eligibleOnly = false;
-
-        function toggleEligibleOnly() {
-            eligibleOnly = !eligibleOnly;
-            const btn = document.getElementById('eligibleToggle');
-            if (eligibleOnly) {
-                btn.style.background = '#1d4ed8';
-                btn.style.color = '#fff';
-                btn.style.borderColor = '#1d4ed8';
-            } else {
-                btn.style.background = 'var(--surface)';
-                btn.style.color = 'var(--text2)';
-                btn.style.borderColor = 'var(--border)';
-            }
-            applyFilters();
-        }
+        // Tailwind class sets for JS-generated pagination number buttons
+        const PAGE_BTN_BASE = 'min-w-[34px] h-[34px] border border-[var(--border)] bg-[var(--card)] text-[var(--text2)] rounded-[9px] text-xs font-bold cursor-pointer transition-colors hover:bg-[#eff6ff] hover:border-[#bfdbfe] hover:text-[#1e40af]';
+        const PAGE_BTN_ACTIVE = 'min-w-[34px] h-[34px] border border-[#1d4ed8] bg-[#1d4ed8] text-white rounded-[9px] text-xs font-bold cursor-pointer transition-colors';
 
         function getFilteredCards() {
             const search = document.getElementById('searchInput').value.toLowerCase().trim();
             const country = document.getElementById('countryFilter').value.toLowerCase().trim();
-            const cards = Array.from(document.querySelectorAll('#jobList .job-card'));
+            const cards = Array.from(document.querySelectorAll('#jobList > div'));
 
             return cards.filter(card => {
                 const text = card.textContent.toLowerCase();
                 const matchesSearch = !search || text.includes(search);
                 const matchesCountry = !country || text.includes(country);
-                const isEligible = card.dataset.eligible === '1' || card.dataset.hasQuals === '0';
-                const matchesEligible = !eligibleOnly || isEligible;
 
-                // Apply dim class
-                const hasQuals = card.dataset.hasQuals === '1';
-                const notEligible = hasQuals && card.dataset.eligible === '0';
-                card.classList.toggle('not-eligible', notEligible);
-
-                return matchesSearch && matchesCountry && matchesEligible;
+                return matchesSearch && matchesCountry;
             });
         }
 
         function renderJobsPage() {
-            const allCards = Array.from(document.querySelectorAll('#jobList .job-card'));
+            const allCards = Array.from(document.querySelectorAll('#jobList > div'));
             const filteredCards = getFilteredCards();
             const totalPages = Math.max(1, Math.ceil(filteredCards.length / JOBS_PER_PAGE));
 
@@ -1853,7 +1282,7 @@ $initials  = count($parts) >= 2
             if (!pageInfo || !prevPageBtn || !nextPageBtn || !paginationWrap || !pageNumbers) return;
 
             if (filteredCards.length === 0) {
-                paginationWrap.style.display = 'none';
+                paginationWrap.classList.add('hidden');
                 pageNumbers.innerHTML = '';
                 pageInfo.textContent = 'Page 0 of 0';
                 prevPageBtn.disabled = true;
@@ -1861,7 +1290,7 @@ $initials  = count($parts) >= 2
                 return;
             }
 
-            paginationWrap.style.display = '';
+            paginationWrap.classList.remove('hidden');
             pageInfo.textContent = `Page ${currentPage} of ${totalPages}`;
             prevPageBtn.disabled = currentPage <= 1;
             nextPageBtn.disabled = currentPage >= totalPages;
@@ -1876,7 +1305,7 @@ $initials  = count($parts) >= 2
             for (let page = 1; page <= totalPages; page += 1) {
                 const btn = document.createElement('button');
                 btn.type = 'button';
-                btn.className = `pagination-page-btn${page === currentPage ? ' active' : ''}`;
+                btn.className = page === currentPage ? PAGE_BTN_ACTIVE : PAGE_BTN_BASE;
                 btn.textContent = String(page);
                 btn.addEventListener('click', () => {
                     currentPage = page;

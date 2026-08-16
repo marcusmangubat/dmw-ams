@@ -30,16 +30,25 @@ $initials = count($parts) >= 2
     ? strtoupper(substr($parts[0], 0, 1) . substr(end($parts), 0, 1))
     : strtoupper(substr($evaluator_name, 0, 2));
 
-// Filter by status ('available' = unclaimed pool anyone can pick up;
-// 'assign' includes legacy assigned)
+// Filter by status ('available' = the shared queue every evaluator can see
+// and pick up, shown oldest-waiting-first; 'assign' includes legacy
+// assigned)
 $valid_statuses = ['available', 'assign', 'assigned', 'under_evaluation', 'for_compliance', 'approved', 'disapproved', 'resubmitted'];
 $status_filter  = $_GET['status'] ?? '';
 $status_filter  = in_array($status_filter, $valid_statuses, true) ? $status_filter : '';
 
-// Build query
+// Search box — matches applicant name, email, position, or employer.
+$search_filter = trim($_GET['q'] ?? '');
+
+// Build query.
+// 'available' is the one shared view: every evaluator sees the same
+// unclaimed queue so any of them can pick up and evaluate an application.
+// Every other tab is scoped strictly to the logged-in evaluator — an
+// evaluator can only see/manage applications currently assigned to them.
 $applications = [];
 if ($status_filter === 'available') {
-    // Unclaimed pool: anyone can open one of these — opening it claims it.
+    // Shared queue, visible to all evaluators, oldest-waiting first —
+    // first passed into the queue, first shown.
     $sql = "
         SELECT a.id, a.status, a.updated_at,
                r.rsf_number, r.position_title, r.worksite_country AS country, r.employer_name,
@@ -50,9 +59,30 @@ if ($status_filter === 'available') {
         LEFT JOIN clients   c ON a.client_id = c.cid
         WHERE a.handling_party IS NULL
           AND a.status IN ('pending','assign','assigned','resubmitted')
-        ORDER BY a.updated_at ASC
     ";
+    $params = [];
+    $types  = "";
+
+    if ($search_filter !== '') {
+        $sql .= " AND (
+            CONCAT(c.first_name, ' ', c.last_name) LIKE ?
+            OR c.email LIKE ?
+            OR r.position_title LIKE ?
+            OR r.employer_name LIKE ?
+            OR r.rsf_number LIKE ?
+            OR r.worksite_country LIKE ?
+        )";
+        $like = '%' . $search_filter . '%';
+        array_push($params, $like, $like, $like, $like, $like, $like);
+        $types .= "ssssss";
+    }
+
+    $sql .= " ORDER BY a.updated_at ASC";
+
     $stmt = $database->prepare($sql);
+    if ($params) {
+        $stmt->bind_param($types, ...$params);
+    }
     $stmt->execute();
     $applications = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
     $stmt->close();
@@ -81,6 +111,20 @@ if ($status_filter === 'available') {
         $types .= "s";
     }
 
+    if ($search_filter !== '') {
+        $sql .= " AND (
+            CONCAT(c.first_name, ' ', c.last_name) LIKE ?
+            OR c.email LIKE ?
+            OR r.position_title LIKE ?
+            OR r.employer_name LIKE ?
+            OR r.rsf_number LIKE ?
+            OR r.worksite_country LIKE ?
+        )";
+        $like = '%' . $search_filter . '%';
+        array_push($params, $like, $like, $like, $like, $like, $like);
+        $types .= "ssssss";
+    }
+
     $sql .= " ORDER BY a.updated_at DESC";
 
     $stmt = $database->prepare($sql);
@@ -90,27 +134,79 @@ if ($status_filter === 'available') {
     $stmt->close();
 }
 
-// Stats for filter pills
+// Stats for the filter tiles.
+// 'available' reflects the shared queue (same for every evaluator).
+// Every other bucket is scoped to the logged-in evaluator's own cases so
+// the counts always match what that evaluator can actually see in the list.
 $stats = ['available' => 0, 'assign' => 0, 'under_evaluation' => 0, 'for_compliance' => 0, 'approved' => 0, 'disapproved' => 0, 'resubmitted' => 0];
-$res   = $database->query("SELECT status, handling_party, COUNT(*) as cnt FROM applications GROUP BY status, handling_party");
-if ($res) {
+
+$avail_res = $database->query("
+    SELECT COUNT(*) AS cnt
+    FROM applications
+    WHERE handling_party IS NULL
+      AND status IN ('pending','assign','assigned','resubmitted')
+");
+if ($avail_res) {
+    $stats['available'] = (int) ($avail_res->fetch_assoc()['cnt'] ?? 0);
+}
+
+if ($evaluator_id) {
+    $stmt_stats = $database->prepare("SELECT status, COUNT(*) as cnt FROM applications WHERE current_evaluator_id = ? GROUP BY status");
+    $stmt_stats->bind_param("i", $evaluator_id);
+    $stmt_stats->execute();
+    $res = $stmt_stats->get_result();
     while ($row = $res->fetch_assoc()) {
-        $s = $row['status'];
+        $s   = $row['status'];
         $cnt = (int) $row['cnt'];
-        if ($row['handling_party'] === null && in_array($s, ['pending', 'assign', 'assigned', 'resubmitted'], true)) {
-            $stats['available'] += $cnt;
-        }
         if ($s === 'assigned' || $s === 'assign') {
             $stats['assign'] += $cnt;
         } elseif (isset($stats[$s])) {
             $stats[$s] += $cnt;
         }
     }
+    $stmt_stats->close();
 }
 
 $page_title = $status_filter
     ? ucwords(str_replace('_', ' ', $status_filter))
     : 'My Cases';
+
+// Single source of truth for status colors/icons/labels — used for the
+// stat/filter tiles AND the status pill on every row, so a status is only
+// ever defined once.
+$status_style = [
+    'available'        => ['bg' => '#d1fae5', 'fg' => '#065f46', 'icon' => 'fa-inbox',               'label' => 'Available'],
+    'pending'          => ['bg' => '#dbeafe', 'fg' => '#1e40af', 'icon' => 'fa-user-check',           'label' => 'Assign'],
+    'assign'           => ['bg' => '#dbeafe', 'fg' => '#1e40af', 'icon' => 'fa-user-check',           'label' => 'Assign'],
+    'assigned'         => ['bg' => '#dbeafe', 'fg' => '#1e40af', 'icon' => 'fa-user-check',           'label' => 'Assign'],
+    'under_evaluation' => ['bg' => '#e0e7ff', 'fg' => '#3730a3', 'icon' => 'fa-magnifying-glass',     'label' => 'Under Evaluation'],
+    'for_compliance'   => ['bg' => '#ffedd5', 'fg' => '#92400e', 'icon' => 'fa-triangle-exclamation', 'label' => 'For Compliance'],
+    'approved'         => ['bg' => '#d1fae5', 'fg' => '#065f46', 'icon' => 'fa-circle-check',         'label' => 'Approved'],
+    'disapproved'      => ['bg' => '#fee2e2', 'fg' => '#991b1b', 'icon' => 'fa-circle-xmark',         'label' => 'Disapproved'],
+    'resubmitted'      => ['bg' => '#fef3c7', 'fg' => '#92400e', 'icon' => 'fa-rotate-right',         'label' => 'Resubmitted'],
+    'default'          => ['bg' => '#f1f5f9', 'fg' => '#475569', 'icon' => 'fa-circle',               'label' => 'Unknown'],
+];
+
+function status_color(string $key, array $map): array
+{
+    return $map[$key] ?? $map['default'];
+}
+
+// Statuses that are locked from the evaluator's perspective — the case is
+// currently out of their hands (with Admin) or already finalized, so there
+// is nothing left for them to open or act on.
+//   - for_compliance : sitting with Admin for compliance review
+//   - resubmitted     : same situation as for_compliance — needs Admin to
+//                       open/reassign it back to an evaluator first
+//   - approved        : terminal, decision already made
+//   - disapproved     : terminal, decision already made
+// NOT locked: pending (shared queue), assign/assigned (owned by this
+// evaluator), under_evaluation (reopened by Admin back to the evaluator).
+$locked_statuses = ['for_compliance', 'resubmitted', 'approved', 'disapproved'];
+
+// Order + keys for the stat/filter tile row (mirrors the original 7 filters)
+$filter_keys = ['available', 'assign', 'under_evaluation', 'for_compliance', 'approved', 'disapproved', 'resubmitted'];
+$total_count = array_sum($stats);
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -127,335 +223,19 @@ $page_title = $status_filter
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
     <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
 
-    <!-- Shared design system -->
+    <!-- Shared design system (topbar / dock / CSS variables live here) -->
     <link rel="stylesheet" href="../css/dashboard.css">
 
+    <!-- Tailwind, used for everything below the topbar -->
+    <script src="https://cdn.tailwindcss.com"></script>
+
     <style>
-        /* ── Page-specific styles ── */
-
-        .main {
-            padding: 14px 14px 0;
-            max-width: 1400px;
-            margin: 0 auto;
+        body {
+            font-family: 'DM Sans', sans-serif;
         }
 
-        /* Page header row */
-        .page-hd {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            gap: 12px;
-            margin-bottom: 14px;
-            flex-wrap: wrap;
-        }
-
-        .page-hd-left h2 {
+        .font-display {
             font-family: 'DM Serif Display', serif;
-            font-size: 20px;
-            color: var(--navy);
-            line-height: 1.2;
-        }
-
-        .page-hd-left p {
-            font-size: 11.5px;
-            color: var(--text3);
-            font-weight: 500;
-            margin-top: 2px;
-        }
-
-        .btn-back {
-            display: inline-flex;
-            align-items: center;
-            gap: 7px;
-            padding: 8px 16px;
-            background: var(--card);
-            border: 1px solid var(--border);
-            border-radius: 10px;
-            font-size: 12px;
-            font-weight: 600;
-            color: var(--text2);
-            text-decoration: none;
-            transition: background .15s, transform .15s;
-            white-space: nowrap;
-        }
-
-        .btn-back:hover {
-            background: var(--surface);
-            transform: translateY(-1px);
-        }
-
-        /* Filter pills row */
-        .filter-pills {
-            display: flex;
-            gap: 7px;
-            flex-wrap: wrap;
-            margin-bottom: 14px;
-        }
-
-        .fpill {
-            display: inline-flex;
-            align-items: center;
-            gap: 5px;
-            padding: 6px 13px;
-            border-radius: 99px;
-            font-size: 11.5px;
-            font-weight: 700;
-            text-decoration: none;
-            border: 1.5px solid var(--border);
-            background: var(--card);
-            color: var(--text2);
-            transition: all .18s;
-            cursor: pointer;
-            white-space: nowrap;
-        }
-
-        .fpill:hover {
-            border-color: var(--blue-lt);
-            color: var(--blue);
-            background: #eff6ff;
-        }
-
-        .fpill.active {
-            background: var(--navy);
-            border-color: var(--navy);
-            color: #fff;
-        }
-
-        .fpill-count {
-            background: rgba(255, 255, 255, .18);
-            color: inherit;
-            font-size: 9.5px;
-            font-weight: 800;
-            padding: 1px 6px;
-            border-radius: 99px;
-        }
-
-        .fpill:not(.active) .fpill-count {
-            background: var(--surface);
-            color: var(--text3);
-        }
-
-        /* Application cards list */
-        .app-card {
-            background: var(--card);
-            border: 1px solid var(--border);
-            border-radius: 14px;
-            overflow: hidden;
-            margin-bottom: 8px;
-            transition: box-shadow .18s, transform .18s;
-            text-decoration: none;
-            color: inherit;
-            display: block;
-        }
-
-        .app-card:hover {
-            box-shadow: 0 8px 24px -4px rgba(11, 31, 75, .12);
-            transform: translateY(-2px);
-        }
-
-        .app-card:active {
-            transform: scale(.99);
-        }
-
-        .app-card-inner {
-            display: flex;
-            align-items: center;
-            gap: 12px;
-            padding: 14px 16px;
-        }
-
-        .app-card-avatar {
-            width: 42px;
-            height: 42px;
-            border-radius: 12px;
-            background: #eef2ff;
-            color: var(--indigo);
-            font-size: 12px;
-            font-weight: 800;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            flex-shrink: 0;
-            letter-spacing: .02em;
-        }
-
-        .app-card-body {
-            flex: 1;
-            min-width: 0;
-        }
-
-        .app-card-name {
-            font-size: 13.5px;
-            font-weight: 700;
-            color: var(--text1);
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
-        }
-
-        .app-card-sub {
-            font-size: 11px;
-            color: var(--text3);
-            font-weight: 500;
-            margin-top: 2px;
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
-        }
-
-        .app-card-meta {
-            font-size: 10.5px;
-            color: var(--text3);
-            font-weight: 500;
-            margin-top: 3px;
-        }
-
-        .app-card-right {
-            display: flex;
-            flex-direction: column;
-            align-items: flex-end;
-            gap: 5px;
-            flex-shrink: 0;
-        }
-
-        .status-pill {
-            display: inline-block;
-            font-size: 9.5px;
-            font-weight: 700;
-            letter-spacing: .04em;
-            text-transform: uppercase;
-            padding: 3px 10px;
-            border-radius: 99px;
-        }
-
-        .sp-approved {
-            background: #d1fae5;
-            color: #065f46;
-        }
-
-        .sp-under {
-            background: #eef2ff;
-            color: #3730a3;
-        }
-
-        .sp-compliance {
-            background: #fff7ed;
-            color: #92400e;
-        }
-
-        .sp-assigned {
-            background: #eff6ff;
-            color: #1e40af;
-        }
-
-        .sp-disapproved {
-            background: #fee2e2;
-            color: #991b1b;
-        }
-
-        .sp-default {
-            background: #f1f5f9;
-            color: #475569;
-        }
-
-        .app-card-date {
-            font-size: 10px;
-            color: var(--text3);
-            font-weight: 500;
-        }
-
-        .app-card-arrow {
-            font-size: 11px;
-            color: var(--text3);
-            margin-top: 2px;
-        }
-
-        /* Desktop: table-like layout */
-        @media (min-width: 768px) {
-            .app-card-inner {
-                padding: 12px 20px;
-                gap: 16px;
-            }
-
-            .app-card-avatar {
-                width: 38px;
-                height: 38px;
-            }
-        }
-
-        /* Empty state */
-        .empty-state {
-            background: var(--card);
-            border: 1px solid var(--border);
-            border-radius: 14px;
-            padding: 52px 20px;
-            text-align: center;
-        }
-
-        .empty-state i {
-            font-size: 36px;
-            color: var(--border);
-            display: block;
-            margin-bottom: 12px;
-        }
-
-        .empty-state p {
-            font-size: 13px;
-            font-weight: 700;
-            color: var(--text2);
-        }
-
-        .empty-state span {
-            font-size: 11.5px;
-            color: var(--text3);
-        }
-
-        /* Section label */
-        .sec-label {
-            font-size: 9.5px;
-            font-weight: 700;
-            letter-spacing: .08em;
-            text-transform: uppercase;
-            color: var(--text3);
-            margin-bottom: 8px;
-        }
-
-        /* Fade-in animations */
-        .fade-in {
-            opacity: 0;
-            transform: translateY(10px);
-            animation: fi2 .4s ease forwards;
-        }
-
-        @keyframes fi2 {
-            to {
-                opacity: 1;
-                transform: translateY(0);
-            }
-        }
-
-        .d1 {
-            animation-delay: .04s
-        }
-
-        .d2 {
-            animation-delay: .08s
-        }
-
-        .d3 {
-            animation-delay: .12s
-        }
-
-        .d4 {
-            animation-delay: .16s
-        }
-
-        .d5 {
-            animation-delay: .20s
-        }
-
-        .d6 {
-            animation-delay: .24s
         }
 
         .topbar-brand img {
@@ -464,15 +244,48 @@ $page_title = $status_filter
             display: block;
             background: transparent;
             filter: none;
+        }
 
+        /* Fade-in-up entrance, staggered per row/tile via inline delay */
+        @keyframes fadeInUp {
+            from {
+                opacity: 0;
+                transform: translateY(10px);
+            }
+
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .fade-in {
+            opacity: 0;
+            animation: fadeInUp .4s ease forwards;
+        }
+
+        /* Hide scrollbar on the mobile chip rail but keep it scrollable */
+        .no-scrollbar::-webkit-scrollbar {
+            display: none;
+        }
+
+        .no-scrollbar {
+            -ms-overflow-style: none;
+            scrollbar-width: none;
+        }
+
+        /* Locked row/card visual cue */
+        .row-locked {
+            opacity: .6;
+            cursor: not-allowed !important;
         }
     </style>
 </head>
 
-<body>
+<body class="bg-[var(--bg,#f4f6fb)]">
 
     <!-- ══════════════════════════════════════════
-         TOPBAR
+         TOPBAR (unchanged)
     ══════════════════════════════════════════ -->
     <header class="topbar">
         <div class="topbar-brand">
@@ -495,191 +308,218 @@ $page_title = $status_filter
     </header>
 
     <!-- ══════════════════════════════════════════
-         SUBBAR
+         PAGE HEAD + STAT / FILTER TILES
     ══════════════════════════════════════════ -->
-    <div class="subbar">
-        <div class="subbar-top">
-            <div class="subbar-greeting">
-                <h2><?= htmlspecialchars($page_title) ?></h2>
-                <p>(<?= count($applications) ?>) application<?= count($applications) !== 1 ? 's' : '' ?> found</p>
+    <main class="max-w-[1400px] mx-auto px-4 pt-5" style="padding-bottom: calc(var(--dock-h) + 28px + env(safe-area-inset-bottom));">
+
+        <div class="flex items-center justify-between gap-3 flex-wrap mb-5 fade-in" style="animation-delay:.02s">
+            <div>
+                <h2 class="font-display text-[22px] leading-tight text-[var(--navy)]"><?= htmlspecialchars($page_title) ?></h2>
+                <p class="text-[11.5px] font-medium text-[var(--text3)] mt-1" id="app-count-line">
+                    <?= count($applications) ?> application<?= count($applications) !== 1 ? 's' : '' ?> found<?= $status_filter ? ' · filtered by "' . htmlspecialchars(str_replace('_', ' ', $status_filter)) . '"' : '' ?><?= $search_filter !== '' ? ' · matching "' . htmlspecialchars($search_filter) . '"' : '' ?>
+                </p>
             </div>
-        </div>
-
-        <!-- Scrollable filter pills -->
-        <div class="filter-scroll">
-
-            <a href="applications.php"
-                class="filter-pill <?= !$status_filter ? 'active' : '' ?>">
-                <i class="fas fa-list"></i> All
-            </a>
-
-            <a href="applications.php?status=available"
-                class="filter-pill <?= $status_filter === 'available' ? 'active' : '' ?>">
-                <i class="fas fa-inbox"></i> Available
-                <?php if ($stats['available'] > 0): ?>
-                    <span style="background:rgba(5,150,105,.15);color:#047857;font-size:9px;font-weight:800;padding:1px 6px;border-radius:99px;">
-                        <?= $stats['available'] ?>
-                    </span>
-                <?php endif; ?>
-            </a>
-
-            <a href="applications.php?status=assign"
-                class="filter-pill <?= ($status_filter === 'assign' || $status_filter === 'assigned') ? 'active' : '' ?>">
-                <i class="fas fa-user-check"></i> Assign
-                <?php if ($stats['assign'] > 0): ?>
-                    <span style="background:rgba(59,130,246,.15);color:#1d4ed8;font-size:9px;font-weight:800;padding:1px 6px;border-radius:99px;">
-                        <?= $stats['assign'] ?>
-                    </span>
-                <?php endif; ?>
-            </a>
-
-            <a href="applications.php?status=under_evaluation"
-                class="filter-pill <?= $status_filter === 'under_evaluation' ? 'active' : '' ?>">
-                <i class="fas fa-magnifying-glass"></i> Under Evaluation
-                <?php if ($stats['under_evaluation'] > 0): ?>
-                    <span style="background:rgba(79,70,229,.15);color:#4338ca;font-size:9px;font-weight:800;padding:1px 6px;border-radius:99px;">
-                        <?= $stats['under_evaluation'] ?>
-                    </span>
-                <?php endif; ?>
-            </a>
-
-            <a href="applications.php?status=for_compliance"
-                class="filter-pill <?= $status_filter === 'for_compliance' ? 'active' : '' ?>">
-                <i class="fas fa-triangle-exclamation"></i> For Compliance
-                <?php if ($stats['for_compliance'] > 0): ?>
-                    <span style="background:rgba(217,119,6,.15);color:#b45309;font-size:9px;font-weight:800;padding:1px 6px;border-radius:99px;">
-                        <?= $stats['for_compliance'] ?>
-                    </span>
-                <?php endif; ?>
-            </a>
-
-            <a href="applications.php?status=approved"
-                class="filter-pill <?= $status_filter === 'approved' ? 'active' : '' ?>">
-                <i class="fas fa-circle-check"></i> Approved
-                <?php if ($stats['approved'] > 0): ?>
-                    <span style="background:rgba(5,150,105,.15);color:#047857;font-size:9px;font-weight:800;padding:1px 6px;border-radius:99px;">
-                        <?= $stats['approved'] ?>
-                    </span>
-                <?php endif; ?>
-            </a>
-
-            <a href="applications.php?status=disapproved"
-                class="filter-pill <?= $status_filter === 'disapproved' ? 'active' : '' ?>">
-                <i class="fas fa-circle-xmark"></i> Disapproved
-                <?php if ($stats['disapproved'] > 0): ?>
-                    <span style="background:rgba(220,38,38,.15);color:#b91c1c;font-size:9px;font-weight:800;padding:1px 6px;border-radius:99px;">
-                        <?= $stats['disapproved'] ?>
-                    </span>
-                <?php endif; ?>
-            </a>
-
-            <a href="applications.php?status=resubmitted"
-                class="filter-pill <?= $status_filter === 'resubmitted' ? 'active' : '' ?>">
-                <i class="fas fa-rotate-right"></i> Resubmitted
-                <?php if ($stats['resubmitted'] > 0): ?>
-                    <span style="background:rgba(234,179,8,.15);color:#a16207;font-size:9px;font-weight:800;padding:1px 6px;border-radius:99px;">
-                        <?= $stats['resubmitted'] ?>
-                    </span>
-                <?php endif; ?>
-            </a>
-
-        </div>
-    </div>
-
-    <!-- ══════════════════════════════════════════
-         MAIN CONTENT
-    ══════════════════════════════════════════ -->
-    <div class="main" style="padding-bottom: calc(var(--dock-h) + 28px + env(safe-area-inset-bottom));">
-
-        <!-- Page header -->
-        <div class="page-hd fade-in d1">
-            <div class="page-hd-left">
-                <h2><?= htmlspecialchars($page_title) ?></h2>
-                <p><?= count($applications) ?> application<?= count($applications) !== 1 ? 's' : '' ?> found<?= $status_filter ? ' · filtered by "' . htmlspecialchars(str_replace('_', ' ', $status_filter)) . '"' : '' ?></p>
-            </div>
-            <a href="index.php" class="btn-back">
+            <a href="index.php"
+                class="inline-flex items-center gap-2 rounded-xl border border-[var(--border)] bg-[var(--card)] px-4 py-2 text-xs font-semibold text-[var(--text2)] no-underline transition hover:-translate-y-0.5 hover:bg-[var(--surface)]">
                 <i class="fas fa-arrow-left"></i> Dashboard
             </a>
         </div>
 
-        <!-- Application list -->
-        <?php if (empty($applications)): ?>
-            <div class="empty-state fade-in d2">
-                <i class="fas fa-inbox"></i>
-                <p>No applications found</p>
-                <span>
-                    <?php if ($status_filter === 'available'): ?>
-                        Nothing waiting to be claimed right now — check back later.
-                    <?php elseif ($status_filter): ?>
-                        No cases of yours with status "<?= htmlspecialchars(str_replace('_', ' ', $status_filter)) ?>".
-                    <?php else: ?>
-                        You have no cases yet — check the Available tab to claim one.
-                    <?php endif; ?>
-                </span>
+        <!-- Search (live — filters the list as you type, no page reload) -->
+        <div class="fade-in mb-5" style="animation-delay:.03s">
+            <div class="relative">
+                <i class="fas fa-magnifying-glass absolute left-4 top-1/2 -translate-y-1/2 text-[13px] text-[var(--text3)]"></i>
+                <input
+                    type="text"
+                    id="app-search-input"
+                    value="<?= htmlspecialchars($search_filter) ?>"
+                    placeholder="Search by applicant name, email, position, employer, RSF #, or country…"
+                    autocomplete="off"
+                    class="w-full rounded-2xl border border-[var(--border)] bg-[var(--card)] py-3 pl-11 pr-11 text-[13px] font-medium text-[var(--text1)] outline-none transition focus:border-[var(--navy)] focus:ring-1 focus:ring-[var(--navy)]">
+                <button type="button" id="app-search-clear"
+                    class="absolute right-3.5 top-1/2 -translate-y-1/2 text-[12px] text-[var(--text3)] hover:text-[var(--text1)]"
+                    title="Clear search" style="<?= $search_filter === '' ? 'display:none' : '' ?>">
+                    <i class="fas fa-xmark"></i>
+                </button>
             </div>
+        </div>
 
-        <?php else: ?>
+        <!-- Stats -->
+        <div class="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-2.5 mb-6">
 
-            <?php foreach ($applications as $i => $app): ?>
-                <?php
-                $status     = strtolower($app['status'] ?? 'unknown');
-                $statusText = str_replace('_', ' ', ucwords($status));
+            <a href="applications.php<?= $search_filter !== '' ? '?q=' . urlencode($search_filter) : '' ?>"
+                class="filter-tile fade-in group relative overflow-hidden rounded-2xl border <?= !$status_filter ? 'border-[var(--navy)] ring-1 ring-[var(--navy)]' : 'border-[var(--border)]' ?> bg-[var(--card)] p-3.5 flex flex-col justify-between gap-2 no-underline transition hover:-translate-y-0.5 hover:shadow-lg"
+                data-base="applications.php"
+                style="animation-delay:.05s">
+                <span class="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wide text-[var(--text3)]">
+                    <i class="fas fa-list"></i> All
+                </span>
+                <span class="text-2xl font-extrabold text-[var(--text1)]"><?= $total_count ?></span>
+            </a>
 
-                $pill = match ($status) {
-                    'approved'         => 'sp-approved',
-                    'under_evaluation' => 'sp-under',
-                    'for_compliance'   => 'sp-compliance',
-                    'disapproved'      => 'sp-disapproved',
-                    'assign'           => 'sp-assigned',
-                    'pending'          => 'sp-assigned',
-                    'assigned'         => 'sp-assigned',
-                    'resubmitted'      => 'sp-under',
-                    default            => 'sp-default',
-                };
-
-                $np  = explode(' ', trim($app['applicant_name'] ?? ''));
-                $avi = strtoupper(count($np) >= 2
-                    ? substr($np[0], 0, 1) . substr(end($np), 0, 1)
-                    : substr($app['applicant_name'] ?? 'NA', 0, 2));
-
-                $delay = 'd' . min($i + 2, 6);
-                ?>
-                <a href="view-application.php?id=<?= (int)$app['id'] ?>"
-                    class="app-card fade-in <?= $delay ?>">
-                    <div class="app-card-inner">
-
-                        <div class="app-card-avatar"><?= htmlspecialchars($avi) ?></div>
-
-                        <div class="app-card-body">
-                            <div class="app-card-name"><?= htmlspecialchars($app['applicant_name'] ?? '—') ?></div>
-                            <div class="app-card-sub"><?= htmlspecialchars($app['applicant_email'] ?? '') ?></div>
-                            <div class="app-card-meta">
-                                <span style="color:var(--blue);font-weight:700;"><?= htmlspecialchars($app['rsf_number'] ?? '—') ?></span>
-                                &nbsp;·&nbsp;<?= htmlspecialchars($app['position_title'] ?? '—') ?>
-                                &nbsp;·&nbsp;<?= htmlspecialchars($app['employer_name'] ?? '—') ?>
-                                &nbsp;·&nbsp;<?= htmlspecialchars($app['country'] ?? '—') ?>
-                            </div>
-                        </div>
-
-                        <div class="app-card-right">
-                            <span class="status-pill <?= $pill ?>"><?= htmlspecialchars($statusText) ?></span>
-                            <div class="app-card-date">
-                                <?= $app['updated_at'] ? date('M d, Y', strtotime($app['updated_at'])) : '—' ?>
-                            </div>
-                            <div class="app-card-arrow"><i class="fas fa-chevron-right"></i></div>
-                        </div>
-
-                    </div>
+            <?php foreach ($filter_keys as $i => $key):
+                $sc       = status_color($key, $status_style);
+                $isActive = ($key === 'assign')
+                    ? ($status_filter === 'assign' || $status_filter === 'assigned')
+                    : ($status_filter === $key);
+                $delay    = .05 + (($i + 1) * .03);
+            ?>
+                <a href="applications.php?status=<?= $key ?><?= $search_filter !== '' ? '&q=' . urlencode($search_filter) : '' ?>"
+                    class="filter-tile fade-in group relative overflow-hidden rounded-2xl border <?= $isActive ? 'border-[var(--navy)] ring-1 ring-[var(--navy)]' : 'border-[var(--border)]' ?> bg-[var(--card)] p-3.5 flex flex-col justify-between gap-2 no-underline transition hover:-translate-y-0.5 hover:shadow-lg"
+                    data-base="applications.php?status=<?= $key ?>"
+                    style="animation-delay:<?= $delay ?>s">
+                    <span class="absolute inset-y-0 left-0 w-1" style="background:<?= $sc['fg'] ?>"></span>
+                    <span class="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wide text-[var(--text3)]">
+                        <i class="fas <?= $sc['icon'] ?>" style="color:<?= $sc['fg'] ?>"></i>
+                        <?= htmlspecialchars($sc['label']) ?>
+                    </span>
+                    <span class="text-2xl font-extrabold text-[var(--text1)]"><?= $stats[$key] ?></span>
                 </a>
             <?php endforeach; ?>
+        </div>
 
-        <?php endif; ?>
+        <!-- ══════════════════════════════════════════
+             APPLICATION LIST
+        ══════════════════════════════════════════ -->
+        <div id="empty-state" class="fade-in rounded-2xl border border-[var(--border)] bg-[var(--card)] py-14 px-6 text-center" style="animation-delay:.1s;<?= empty($applications) ? '' : 'display:none' ?>">
+            <i class="fas fa-inbox text-4xl text-[var(--border)] block mb-3"></i>
+            <p class="text-sm font-bold text-[var(--text2)]">No applications found</p>
+            <span class="text-xs text-[var(--text3)]" id="empty-state-text">
+                <?php if ($search_filter !== ''): ?>
+                    No results for "<?= htmlspecialchars($search_filter) ?>"<?= $status_filter ? ' in "' . htmlspecialchars(str_replace('_', ' ', $status_filter)) . '"' : '' ?>. Try a different name, email, position, employer, RSF #, or country.
+                <?php elseif ($status_filter === 'available'): ?>
+                    Nothing waiting to be claimed right now — check back later.
+                <?php elseif ($status_filter): ?>
+                    No cases of yours with status "<?= htmlspecialchars(str_replace('_', ' ', $status_filter)) ?>".
+                <?php else: ?>
+                    You have no cases yet — check the Available tile to claim one.
+                <?php endif; ?>
+            </span>
+        </div>
 
-    </div><!-- /main -->
+        <div id="results-wrapper" style="<?= empty($applications) ? 'display:none' : '' ?>">
 
+            <!-- Desktop / tablet: real table, one row per application -->
+            <div class="hidden md:block rounded-2xl border border-[var(--border)] bg-[var(--card)] overflow-hidden fade-in" style="animation-delay:.1s">
+                <table class="w-full border-collapse text-sm">
+                    <thead>
+                        <tr class="bg-[var(--surface)] text-[10px] font-bold uppercase tracking-wide text-[var(--text3)]">
+                            <th class="text-left px-5 py-3">Applicant</th>
+                            <th class="text-left px-5 py-3">Position &amp; Employer</th>
+                            <th class="text-left px-5 py-3">RSF / Country</th>
+                            <th class="text-left px-5 py-3">Status</th>
+                            <th class="text-left px-5 py-3">Updated</th>
+                            <th class="px-5 py-3"></th>
+                        </tr>
+                    </thead>
+                    <tbody id="app-tbody">
+                        <?php foreach ($applications as $app):
+                            $status     = strtolower($app['status'] ?? 'unknown');
+                            $statusText = str_replace('_', ' ', ucwords($status));
+                            $sc         = status_color($status, $status_style);
+                            $isLocked   = in_array($status, $locked_statuses, true);
+
+                            $np  = explode(' ', trim($app['applicant_name'] ?? ''));
+                            $avi = strtoupper(count($np) >= 2
+                                ? substr($np[0], 0, 1) . substr(end($np), 0, 1)
+                                : substr($app['applicant_name'] ?? 'NA', 0, 2));
+                        ?>
+                            <tr class="border-t border-[var(--border)] cursor-pointer transition hover:bg-[var(--surface)] <?= $isLocked ? 'row-locked' : '' ?>"
+                                onclick="openApplication(<?= (int)$app['id'] ?>, '<?= htmlspecialchars($status, ENT_QUOTES) ?>')">
+                                <td class="px-5 py-3">
+                                    <div class="flex items-center gap-3">
+                                        <div class="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-xl bg-[#eef2ff] text-[11px] font-extrabold text-[var(--indigo)]">
+                                            <?= htmlspecialchars($avi) ?>
+                                        </div>
+                                        <div class="min-w-0">
+                                            <div class="truncate text-[13px] font-bold text-[var(--text1)]"><?= htmlspecialchars($app['applicant_name'] ?? '—') ?></div>
+                                            <div class="truncate text-[11px] font-medium text-[var(--text3)]"><?= htmlspecialchars($app['applicant_email'] ?? '') ?></div>
+                                        </div>
+                                    </div>
+                                </td>
+                                <td class="px-5 py-3">
+                                    <div class="text-[12.5px] font-semibold text-[var(--text1)]"><?= htmlspecialchars($app['position_title'] ?? '—') ?></div>
+                                    <div class="text-[11px] text-[var(--text3)]"><?= htmlspecialchars($app['employer_name'] ?? '—') ?></div>
+                                </td>
+                                <td class="px-5 py-3">
+                                    <div class="text-[12.5px] font-bold text-[var(--blue)]"><?= htmlspecialchars($app['rsf_number'] ?? '—') ?></div>
+                                    <div class="text-[11px] text-[var(--text3)]"><?= htmlspecialchars($app['country'] ?? '—') ?></div>
+                                </td>
+                                <td class="px-5 py-3">
+                                    <span class="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[9.5px] font-bold uppercase tracking-wide"
+                                        style="background:<?= $sc['bg'] ?>;color:<?= $sc['fg'] ?>;">
+                                        <i class="fas <?= $sc['icon'] ?>"></i><?= htmlspecialchars($statusText) ?>
+                                    </span>
+                                    <?php if ($isLocked): ?>
+                                        <i class="fas fa-lock text-[10px] text-[var(--text3)] ml-1.5" title="Locked"></i>
+                                    <?php endif; ?>
+                                </td>
+                                <td class="px-5 py-3 text-[11.5px] text-[var(--text3)]">
+                                    <?= $app['updated_at'] ? date('M d, Y', strtotime($app['updated_at'])) : '—' ?>
+                                </td>
+                                <td class="px-5 py-3 text-right text-[var(--text3)]">
+                                    <i class="fas <?= $isLocked ? 'fa-lock' : 'fa-chevron-right' ?> text-xs"></i>
+                                </td>
+                            </tr>
+                        <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </div>
+
+            <!-- Mobile: stacked cards -->
+            <div class="md:hidden flex flex-col gap-2.5" id="app-cards">
+                <?php foreach ($applications as $i => $app):
+                    $status     = strtolower($app['status'] ?? 'unknown');
+                    $statusText = str_replace('_', ' ', ucwords($status));
+                    $sc         = status_color($status, $status_style);
+                    $isLocked   = in_array($status, $locked_statuses, true);
+
+                    $np  = explode(' ', trim($app['applicant_name'] ?? ''));
+                    $avi = strtoupper(count($np) >= 2
+                        ? substr($np[0], 0, 1) . substr(end($np), 0, 1)
+                        : substr($app['applicant_name'] ?? 'NA', 0, 2));
+
+                    $delay = .1 + min($i, 6) * .03;
+                ?>
+                    <a href="javascript:void(0)"
+                        onclick="return openApplication(<?= (int)$app['id'] ?>, '<?= htmlspecialchars($status, ENT_QUOTES) ?>')"
+                        class="fade-in flex items-center gap-3 rounded-2xl border border-[var(--border)] bg-[var(--card)] p-3.5 no-underline text-inherit transition hover:-translate-y-0.5 hover:shadow-md <?= $isLocked ? 'row-locked' : '' ?>"
+                        style="animation-delay:<?= $delay ?>s">
+
+                        <div class="flex h-11 w-11 flex-shrink-0 items-center justify-center rounded-xl bg-[#eef2ff] text-xs font-extrabold text-[var(--indigo)]">
+                            <?= htmlspecialchars($avi) ?>
+                        </div>
+
+                        <div class="min-w-0 flex-1">
+                            <div class="truncate text-[13.5px] font-bold text-[var(--text1)]"><?= htmlspecialchars($app['applicant_name'] ?? '—') ?></div>
+                            <div class="truncate text-[11px] font-medium text-[var(--text3)]"><?= htmlspecialchars($app['applicant_email'] ?? '') ?></div>
+                            <div class="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10.5px] font-medium text-[var(--text3)]">
+                                <span class="font-bold text-[var(--blue)]"><i class="fas fa-hashtag text-[9px] mr-1"></i><?= htmlspecialchars($app['rsf_number'] ?? '—') ?></span>
+                                <span><i class="fas fa-briefcase text-[9px] mr-1 opacity-70"></i><?= htmlspecialchars($app['position_title'] ?? '—') ?></span>
+                                <span><i class="fas fa-building text-[9px] mr-1 opacity-70"></i><?= htmlspecialchars($app['employer_name'] ?? '—') ?></span>
+                                <span><i class="fas fa-earth-asia text-[9px] mr-1 opacity-70"></i><?= htmlspecialchars($app['country'] ?? '—') ?></span>
+                            </div>
+                        </div>
+
+                        <div class="flex flex-shrink-0 flex-col items-end gap-1.5">
+                            <span class="inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[9px] font-bold uppercase tracking-wide"
+                                style="background:<?= $sc['bg'] ?>;color:<?= $sc['fg'] ?>;">
+                                <i class="fas <?= $isLocked ? 'fa-lock' : $sc['icon'] ?>"></i><?= htmlspecialchars($statusText) ?>
+                            </span>
+                            <span class="text-[10px] font-medium text-[var(--text3)]">
+                                <?= $app['updated_at'] ? date('M d, Y', strtotime($app['updated_at'])) : '—' ?>
+                            </span>
+                        </div>
+                    </a>
+                <?php endforeach; ?>
+            </div>
+
+        </div>
+
+    </main>
 
     <!-- ══════════════════════════════════════════
-         FLOATING DOCK
+         FLOATING DOCK (unchanged)
     ══════════════════════════════════════════ -->
     <div class="dock-wrap">
         <nav class="dock">
@@ -729,6 +569,316 @@ $page_title = $status_filter
                 month: 'short',
                 day: 'numeric'
             }).toUpperCase();
+
+        // Statuses that are locked from the evaluator's side — mirrors the
+        // PHP $locked_statuses array above. Kept in sync manually since one
+        // lives server-side (for query/render logic) and one client-side
+        // (for the click gate).
+        const LOCKED_STATUSES = ['for_compliance', 'resubmitted', 'approved', 'disapproved'];
+        const CURRENT_STATUS = <?= json_encode($status_filter) ?>;
+        /**
+         * Gate for opening an application row/card.
+         * Returns false in all cases to stop any default <a>/onclick
+         * navigation from firing alongside this handler.
+         */
+        function openApplication(id, status) {
+            if (LOCKED_STATUSES.includes(status)) {
+                Swal.fire({
+                    icon: 'warning',
+                    title: 'Application Locked',
+                    text: 'This application is currently with Admin (or already finalized) and cannot be accessed until it is reopened or reassigned to an evaluator.',
+                    confirmButtonColor: '#1e40af',
+                    confirmButtonText: 'Understood'
+                });
+                return false;
+            }
+            // Coming from the shared Available queue — clicking through
+            // claims the case for this evaluator, so confirm first.
+            if (CURRENT_STATUS === 'available') {
+                Swal.fire({
+                    icon: 'question',
+                    title: 'Evaluate this application?',
+                    text: 'Opening this will claim it for evaluation and assign it to you. It will then leave the shared Available queue and other evaluators will no longer be able to pick it up.',
+                    showCancelButton: true,
+                    confirmButtonColor: '#1e40af',
+                    cancelButtonColor: '#94a3b8',
+                    confirmButtonText: 'Yes, claim & evaluate',
+                    cancelButtonText: 'Cancel'
+                }).then((result) => {
+                    if (result.isConfirmed) {
+                        window.location = 'view-application.php?id=' + id;
+                    }
+                });
+                return false;
+            }
+
+            window.location = 'view-application.php?id=' + id;
+            return false;
+            window.location = 'view-application.php?id=' + id;
+            return false;
+        }
+
+        // ══════════════════════════════════════════
+        // LIVE SEARCH — filters the list as you type,
+        // no page reload. Mirrors the PHP status_style /
+        // locked_statuses tables above so rendered rows
+        // look identical to the server-rendered ones.
+        // ══════════════════════════════════════════
+
+
+        const STATUS_STYLE = {
+            available: {
+                bg: '#d1fae5',
+                fg: '#065f46',
+                icon: 'fa-inbox',
+                label: 'Available'
+            },
+            pending: {
+                bg: '#dbeafe',
+                fg: '#1e40af',
+                icon: 'fa-user-check',
+                label: 'Assign'
+            },
+            assign: {
+                bg: '#dbeafe',
+                fg: '#1e40af',
+                icon: 'fa-user-check',
+                label: 'Assign'
+            },
+            assigned: {
+                bg: '#dbeafe',
+                fg: '#1e40af',
+                icon: 'fa-user-check',
+                label: 'Assign'
+            },
+            under_evaluation: {
+                bg: '#e0e7ff',
+                fg: '#3730a3',
+                icon: 'fa-magnifying-glass',
+                label: 'Under Evaluation'
+            },
+            for_compliance: {
+                bg: '#ffedd5',
+                fg: '#92400e',
+                icon: 'fa-triangle-exclamation',
+                label: 'For Compliance'
+            },
+            approved: {
+                bg: '#d1fae5',
+                fg: '#065f46',
+                icon: 'fa-circle-check',
+                label: 'Approved'
+            },
+            disapproved: {
+                bg: '#fee2e2',
+                fg: '#991b1b',
+                icon: 'fa-circle-xmark',
+                label: 'Disapproved'
+            },
+            resubmitted: {
+                bg: '#fef3c7',
+                fg: '#92400e',
+                icon: 'fa-rotate-right',
+                label: 'Resubmitted'
+            },
+            default: {
+                bg: '#f1f5f9',
+                fg: '#475569',
+                icon: 'fa-circle',
+                label: 'Unknown'
+            },
+        };
+        const statusStyle = (key) => STATUS_STYLE[key] || STATUS_STYLE.default;
+
+        function escapeHtml(str) {
+            return String(str ?? '').replace(/[&<>"']/g, (c) => ({
+                '&': '&amp;',
+                '<': '&lt;',
+                '>': '&gt;',
+                '"': '&quot;',
+                "'": '&#39;'
+            } [c]));
+        }
+
+        function formatDate(dateStr) {
+            if (!dateStr) return '—';
+            const d = new Date(dateStr.replace(' ', 'T'));
+            if (isNaN(d.getTime())) return '—';
+            return d.toLocaleDateString('en-US', {
+                month: 'short',
+                day: '2-digit',
+                year: 'numeric'
+            });
+        }
+
+        function avatarInitials(name) {
+            const parts = (name || '').trim().split(/\s+/).filter(Boolean);
+            if (parts.length >= 2) {
+                return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+            }
+            return (name || 'NA').substring(0, 2).toUpperCase();
+        }
+
+        function renderRow(app) {
+            const status = (app.status || 'unknown').toLowerCase();
+            const statusText = status.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+            const sc = statusStyle(status);
+            const isLocked = LOCKED_STATUSES.includes(status);
+            const avi = avatarInitials(app.applicant_name);
+
+            return `
+                <tr class="border-t border-[var(--border)] cursor-pointer transition hover:bg-[var(--surface)] ${isLocked ? 'row-locked' : ''}"
+                    onclick="openApplication(${app.id}, '${status}')">
+                    <td class="px-5 py-3">
+                        <div class="flex items-center gap-3">
+                            <div class="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-xl bg-[#eef2ff] text-[11px] font-extrabold text-[var(--indigo)]">${escapeHtml(avi)}</div>
+                            <div class="min-w-0">
+                                <div class="truncate text-[13px] font-bold text-[var(--text1)]">${escapeHtml(app.applicant_name || '—')}</div>
+                                <div class="truncate text-[11px] font-medium text-[var(--text3)]">${escapeHtml(app.applicant_email || '')}</div>
+                            </div>
+                        </div>
+                    </td>
+                    <td class="px-5 py-3">
+                        <div class="text-[12.5px] font-semibold text-[var(--text1)]">${escapeHtml(app.position_title || '—')}</div>
+                        <div class="text-[11px] text-[var(--text3)]">${escapeHtml(app.employer_name || '—')}</div>
+                    </td>
+                    <td class="px-5 py-3">
+                        <div class="text-[12.5px] font-bold text-[var(--blue)]">${escapeHtml(app.rsf_number || '—')}</div>
+                        <div class="text-[11px] text-[var(--text3)]">${escapeHtml(app.country || '—')}</div>
+                    </td>
+                    <td class="px-5 py-3">
+                        <span class="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[9.5px] font-bold uppercase tracking-wide" style="background:${sc.bg};color:${sc.fg};">
+                            <i class="fas ${sc.icon}"></i>${escapeHtml(statusText)}
+                        </span>
+                        ${isLocked ? '<i class="fas fa-lock text-[10px] text-[var(--text3)] ml-1.5" title="Locked"></i>' : ''}
+                    </td>
+                    <td class="px-5 py-3 text-[11.5px] text-[var(--text3)]">${formatDate(app.updated_at)}</td>
+                    <td class="px-5 py-3 text-right text-[var(--text3)]">
+                        <i class="fas ${isLocked ? 'fa-lock' : 'fa-chevron-right'} text-xs"></i>
+                    </td>
+                </tr>`;
+        }
+
+        function renderCard(app, i) {
+            const status = (app.status || 'unknown').toLowerCase();
+            const statusText = status.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+            const sc = statusStyle(status);
+            const isLocked = LOCKED_STATUSES.includes(status);
+            const avi = avatarInitials(app.applicant_name);
+            const delay = (.1 + Math.min(i, 6) * .03).toFixed(2);
+
+            return `
+                <a href="javascript:void(0)"
+                    onclick="return openApplication(${app.id}, '${status}')"
+                    class="fade-in flex items-center gap-3 rounded-2xl border border-[var(--border)] bg-[var(--card)] p-3.5 no-underline text-inherit transition hover:-translate-y-0.5 hover:shadow-md ${isLocked ? 'row-locked' : ''}"
+                    style="animation-delay:${delay}s">
+                    <div class="flex h-11 w-11 flex-shrink-0 items-center justify-center rounded-xl bg-[#eef2ff] text-xs font-extrabold text-[var(--indigo)]">${escapeHtml(avi)}</div>
+                    <div class="min-w-0 flex-1">
+                        <div class="truncate text-[13.5px] font-bold text-[var(--text1)]">${escapeHtml(app.applicant_name || '—')}</div>
+                        <div class="truncate text-[11px] font-medium text-[var(--text3)]">${escapeHtml(app.applicant_email || '')}</div>
+                        <div class="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10.5px] font-medium text-[var(--text3)]">
+                            <span class="font-bold text-[var(--blue)]"><i class="fas fa-hashtag text-[9px] mr-1"></i>${escapeHtml(app.rsf_number || '—')}</span>
+                            <span><i class="fas fa-briefcase text-[9px] mr-1 opacity-70"></i>${escapeHtml(app.position_title || '—')}</span>
+                            <span><i class="fas fa-building text-[9px] mr-1 opacity-70"></i>${escapeHtml(app.employer_name || '—')}</span>
+                            <span><i class="fas fa-earth-asia text-[9px] mr-1 opacity-70"></i>${escapeHtml(app.country || '—')}</span>
+                        </div>
+                    </div>
+                    <div class="flex flex-shrink-0 flex-col items-end gap-1.5">
+                        <span class="inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[9px] font-bold uppercase tracking-wide" style="background:${sc.bg};color:${sc.fg};">
+                            <i class="fas ${isLocked ? 'fa-lock' : sc.icon}"></i>${escapeHtml(statusText)}
+                        </span>
+                        <span class="text-[10px] font-medium text-[var(--text3)]">${formatDate(app.updated_at)}</span>
+                    </div>
+                </a>`;
+        }
+
+        const searchInput = document.getElementById('app-search-input');
+        const clearBtn = document.getElementById('app-search-clear');
+        const countLine = document.getElementById('app-count-line');
+        const emptyState = document.getElementById('empty-state');
+        const emptyText = document.getElementById('empty-state-text');
+        const resultsWrap = document.getElementById('results-wrapper');
+        const tbody = document.getElementById('app-tbody');
+        const cardsWrap = document.getElementById('app-cards');
+
+        function renderResults(list, term) {
+            if (!list.length) {
+                resultsWrap.style.display = 'none';
+                emptyState.style.display = '';
+                emptyText.textContent = term ?
+                    `No results for "${term}"${CURRENT_STATUS ? ' in "' + CURRENT_STATUS.replace(/_/g, ' ') + '"' : ''}. Try a different name, email, position, employer, RSF #, or country.` :
+                    'No applications found.';
+            } else {
+                emptyState.style.display = 'none';
+                resultsWrap.style.display = '';
+                tbody.innerHTML = list.map(renderRow).join('');
+                cardsWrap.innerHTML = list.map(renderCard).join('');
+            }
+
+            countLine.textContent =
+                `${list.length} application${list.length !== 1 ? 's' : ''} found` +
+                (CURRENT_STATUS ? ` · filtered by "${CURRENT_STATUS.replace(/_/g, ' ')}"` : '') +
+                (term ? ` · matching "${term}"` : '');
+        }
+
+        let searchDebounce = null;
+        let searchAbort = null;
+
+        function runSearch() {
+            const term = searchInput.value.trim();
+            clearBtn.style.display = term ? '' : 'none';
+
+            if (searchAbort) searchAbort.abort();
+            searchAbort = new AbortController();
+
+            const params = new URLSearchParams();
+            if (CURRENT_STATUS) params.set('status', CURRENT_STATUS);
+            if (term) params.set('q', term);
+
+            fetch('applications_search.php?' + params.toString(), {
+                    signal: searchAbort.signal
+                })
+                .then(r => r.json())
+                .then(data => renderResults(data.applications || [], term))
+                .catch(err => {
+                    if (err.name !== 'AbortError') console.error('Search failed:', err);
+                });
+        }
+
+        if (searchInput) {
+            searchInput.addEventListener('input', () => {
+                clearBtn.style.display = searchInput.value ? '' : 'none';
+                syncTileLinks();
+                clearTimeout(searchDebounce);
+                searchDebounce = setTimeout(runSearch, 300);
+            });
+        }
+
+        if (clearBtn) {
+            clearBtn.addEventListener('click', () => {
+                searchInput.value = '';
+                clearBtn.style.display = 'none';
+                syncTileLinks();
+                clearTimeout(searchDebounce);
+                runSearch();
+            });
+        }
+
+        // Keep the status filter tiles' hrefs carrying the current search
+        // term, so clicking one to change tabs doesn't lose what's typed.
+        const tileLinks = document.querySelectorAll('.filter-tile');
+
+        function syncTileLinks() {
+            const term = searchInput ? searchInput.value.trim() : '';
+            tileLinks.forEach(a => {
+                const base = a.dataset.base;
+                if (!term) {
+                    a.href = base;
+                    return;
+                }
+                a.href = base + (base.includes('?') ? '&' : '?') + 'q=' + encodeURIComponent(term);
+            });
+        }
     </script>
     <script type="module" src="../js/main.js"></script>
 

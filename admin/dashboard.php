@@ -870,6 +870,7 @@ $initials = strtoupper(
     </script>
 
     <script type="module" src="../js/main.js"></script>
+    <?php include '../includes/login_toast.php'; ?>
 </body>
 
 </html>

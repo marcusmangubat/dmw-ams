@@ -48,23 +48,33 @@ $stats = [
     'total'            => 0,
 ];
 
-$res = $database->query("
-    SELECT status, COUNT(*) as cnt 
-    FROM applications 
-    GROUP BY status
-");
+// Only count applications currently assigned to this evaluator
+// (current_evaluator_id is the FK on `applications` -> `evaluators`.`eid`,
+// and reflects who is presently handling the application).
+if ($evaluator_id) {
+    $stmt_stats = $database->prepare("
+        SELECT status, COUNT(*) as cnt 
+        FROM applications 
+        WHERE current_evaluator_id = ?
+        GROUP BY status
+    ");
+    $stmt_stats->bind_param("i", $evaluator_id);
+    $stmt_stats->execute();
+    $res = $stmt_stats->get_result();
 
-if ($res) {
-    while ($row = $res->fetch_assoc()) {
-        $key = $row['status'];
-        $cnt = (int) $row['cnt'];
-        if (in_array($key, ['assigned', 'assign', 'pending'], true)) {
-            $stats['assign'] += $cnt;
-        } elseif (array_key_exists($key, $stats)) {
-            $stats[$key] += $cnt;
+    if ($res) {
+        while ($row = $res->fetch_assoc()) {
+            $key = $row['status'];
+            $cnt = (int) $row['cnt'];
+            if (in_array($key, ['assigned', 'assign', 'pending'], true)) {
+                $stats['assign'] += $cnt;
+            } elseif (array_key_exists($key, $stats)) {
+                $stats[$key] += $cnt;
+            }
+            $stats['total'] += $cnt;
         }
-        $stats['total'] += $cnt;
     }
+    $stmt_stats->close();
 }
 
 // Applications sitting unclaimed in the pool right now (anyone can open one)
@@ -133,6 +143,23 @@ $parts    = explode(' ', trim($evaluator_name));
 $initials = count($parts) >= 2
     ? strtoupper(substr($parts[0], 0, 1) . substr(end($parts), 0, 1))
     : strtoupper(substr($evaluator_name, 0, 2));
+
+// ────────────────────────────────────────────────
+// Status pill → Tailwind utility classes (same hex values as before,
+// just expressed as Tailwind's matching palette tokens)
+// ────────────────────────────────────────────────
+function pill_classes(string $status): string
+{
+    return match ($status) {
+        'approved'         => 'bg-emerald-100 text-emerald-800',
+        'under_evaluation' => 'bg-indigo-50 text-indigo-800',
+        'for_compliance'   => 'bg-orange-50 text-amber-800',
+        'disapproved'      => 'bg-red-100 text-red-800',
+        'assign', 'pending', 'assigned' => 'bg-blue-50 text-blue-800',
+        'resubmitted'      => 'bg-indigo-50 text-indigo-800',
+        default            => 'bg-slate-100 text-slate-600',
+    };
+}
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -151,266 +178,53 @@ $initials = count($parts) >= 2
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
     <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
 
-    <!-- Your actual dashboard stylesheet -->
+    <!--
+        dashboard.css is kept ONLY because the topbar, subbar and floating
+        dock below still depend on it and were explicitly left untouched.
+        Everything else on this page (quick access, KPI cards, application
+        list, status breakdown) no longer needs it — it's built with
+        Tailwind utility classes instead.
+    -->
     <link rel="stylesheet" href="../css/dashboard.css">
 
+    <!-- Tailwind (CDN) powers every section below the subbar -->
+    <script src="https://cdn.tailwindcss.com"></script>
+
     <style>
-        /* ── Page-specific additions that extend dashboard.css ── */
-
-        /* Quick-access shortcut row */
-        .quick-row {
-            display: grid;
-            grid-template-columns: repeat(3, 1fr);
-            gap: 10px;
-            margin-bottom: 12px;
-        }
-
-        .quick-btn {
-            background: var(--card);
-            border: 1px solid var(--border);
-            border-radius: 14px;
-            padding: 14px 8px 12px;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            gap: 7px;
-            text-decoration: none;
-            color: var(--text2);
-            font-family: 'DM Sans', sans-serif;
-            font-size: 11px;
-            font-weight: 700;
-            text-align: center;
-            cursor: pointer;
-            transition: background .18s, transform .18s, box-shadow .18s;
-        }
-
-        .quick-btn:hover {
-            background: #f8fafc;
-            transform: translateY(-3px);
-            box-shadow: 0 8px 20px -4px rgba(11, 31, 75, .12);
-        }
-
-        .quick-btn:active {
-            transform: scale(.97);
-        }
-
-        .quick-icon {
-            width: 36px;
-            height: 36px;
-            border-radius: 10px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 14px;
-        }
-
-        /* Application list rows inside a .card */
-        .app-list {
-            display: flex;
-            flex-direction: column;
-        }
-
-        .app-row {
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            padding: 10px 0;
-            border-bottom: 1px solid var(--border);
-            text-decoration: none;
-            color: inherit;
-            transition: background .14s;
-            border-radius: 10px;
-            padding-left: 4px;
-            padding-right: 4px;
-        }
-
-        .app-row:last-child {
-            border-bottom: none;
-        }
-
-        .app-row:hover {
-            background: var(--surface);
-        }
-
-        .app-avatar {
-            width: 36px;
-            height: 36px;
-            flex-shrink: 0;
-            border-radius: 10px;
-            background: #eef2ff;
-            color: var(--indigo);
-            font-size: 10.5px;
-            font-weight: 800;
-            letter-spacing: .02em;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-        }
-
-        .app-info {
-            flex: 1;
-            min-width: 0;
-        }
-
-        .app-name {
-            font-size: 12.5px;
-            font-weight: 700;
-            color: var(--text1);
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
-        }
-
-        .app-meta {
-            font-size: 10.5px;
-            color: var(--text3);
-            font-weight: 500;
-            margin-top: 2px;
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
-        }
-
-        .app-right {
-            text-align: right;
-            flex-shrink: 0;
-        }
-
-        .status-pill {
-            display: inline-block;
-            font-size: 9.5px;
-            font-weight: 700;
-            letter-spacing: .04em;
-            text-transform: uppercase;
-            padding: 3px 9px;
-            border-radius: 99px;
-        }
-
-        .sp-approved {
-            background: #d1fae5;
-            color: #065f46;
-        }
-
-        .sp-under {
-            background: #eef2ff;
-            color: #3730a3;
-        }
-
-        .sp-compliance {
-            background: #fff7ed;
-            color: #92400e;
-        }
-
-        .sp-assigned {
-            background: #eff6ff;
-            color: #1e40af;
-        }
-
-        .sp-disapproved {
-            background: #fee2e2;
-            color: #991b1b;
-        }
-
-        .sp-default {
-            background: #f1f5f9;
-            color: #475569;
-        }
-
-        .app-date {
-            font-size: 9.5px;
-            color: var(--text3);
-            margin-top: 3px;
-            font-weight: 500;
-        }
-
-        /* Empty state */
-        .empty-state {
-            padding: 40px 16px;
-            text-align: center;
-        }
-
-        .empty-state i {
-            font-size: 32px;
-            color: var(--border);
-            display: block;
-            margin-bottom: 10px;
-        }
-
-        .empty-state p {
-            font-size: 12.5px;
-            font-weight: 600;
-            color: var(--text3);
-        }
-
-        .empty-state span {
-            font-size: 11px;
-            color: var(--text3);
-            opacity: .7;
-        }
-
-        /* Section label (mini uppercase eyebrow) */
-        .sec-label {
-            font-size: 9.5px;
-            font-weight: 700;
-            letter-spacing: .08em;
-            text-transform: uppercase;
-            color: var(--text3);
-            margin-bottom: 8px;
-        }
-
-        /* Stagger animations */
-        .fade-in {
-            opacity: 0;
-            transform: translateY(10px);
-            animation: fi2 .4s ease forwards;
-        }
-
-        @keyframes fi2 {
-            to {
-                opacity: 1;
-                transform: translateY(0);
-            }
-        }
-
-        .d1 {
-            animation-delay: .05s
-        }
-
-        .d2 {
-            animation-delay: .1s
-        }
-
-        .d3 {
-            animation-delay: .15s
-        }
-
-        .d4 {
-            animation-delay: .2s
-        }
-
-        .d5 {
-            animation-delay: .25s
-        }
-
-        .d6 {
-            animation-delay: .3s
-        }
-
+        /* The only rule Tailwind's CDN can't express as a utility class,
+           kept so the untouched topbar markup renders identically. */
         .topbar-brand img {
             width: 42px;
             height: auto;
             display: block;
             background: transparent;
             filter: none;
+        }
 
+        /* Fade-in-up entrance, staggered per section via inline delay */
+        @keyframes fadeInUp {
+            from {
+                opacity: 0;
+                transform: translateY(10px);
+            }
+
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .fade-in {
+            opacity: 0;
+            animation: fadeInUp .4s ease forwards;
         }
     </style>
 </head>
 
-<body>
+<body class="font-sans">
 
     <!-- ══════════════════════════════════════════
-         TOPBAR
+         TOPBAR — unchanged
     ══════════════════════════════════════════ -->
     <header class="topbar">
         <div class="topbar-brand">
@@ -433,40 +247,113 @@ $initials = count($parts) >= 2
     </header>
 
     <!-- ══════════════════════════════════════════
-         SUBBAR
+         SUBBAR — unchanged
     ══════════════════════════════════════════ -->
     <div class="subbar">
         <div class="subbar-top">
             <div class="subbar-greeting">
                 <h2><?= $greeting ?>, <?= htmlspecialchars($first_name) ?></h2>
-                <p>(<?= number_format($my_assigned_count) ?>) active assignment<?= $my_assigned_count !== 1 ? 's' : '' ?></p>
+                <p>(<?= number_format($available_count) ?>) Pending Applications</p>
             </div>
         </div>
     </div>
 
-    <!-- MAIN CONTENT -->
-    <div class="main">
+    <!-- ══════════════════════════════════════════
+         MAIN CONTENT — rebuilt with Tailwind
+    ══════════════════════════════════════════ -->
+    <div class="max-w-6xl mx-auto px-4 pt-3 pb-28">
+
+
+        <!-- KPI Stats -->
+        <p class="text-[9.5px] font-bold tracking-[.08em] uppercase text-slate-400 mb-2 fade-in" style="animation-delay:.1s">
+            Overview
+        </p>
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-5 fade-in" style="animation-delay:.15s">
+
+            <!-- Total -->
+            <div class="bg-white border border-slate-200 rounded-2xl p-4 shadow-sm hover:shadow-md transition-shadow duration-200">
+                <div class="flex items-start justify-between">
+                    <div>
+                        <div class="text-[10.5px] font-semibold text-slate-400 uppercase tracking-wide">Total Applications</div>
+                        <div class="text-2xl font-extrabold text-blue-600 mt-1"><?= number_format($stats['total']) ?></div>
+                    </div>
+                    <div class="w-9 h-9 rounded-xl bg-blue-50 text-blue-500 flex items-center justify-center text-sm shrink-0">
+                        <i class="fas fa-file-lines"></i>
+                    </div>
+                </div>
+                <div class="text-[10.5px] text-slate-400 font-medium mt-2">All applications you review</div>
+            </div>
+
+            <!-- Available to claim -->
+            <a href="applications.php?status=available"
+                class="group bg-white border border-slate-200 rounded-2xl p-4 shadow-sm no-underline block transition-all duration-200 hover:shadow-md hover:-translate-y-0.5">
+                <div class="flex items-start justify-between">
+                    <div>
+                        <div class="text-[10.5px] font-semibold text-slate-400 uppercase tracking-wide">Available</div>
+                        <div class="text-2xl font-extrabold text-emerald-600 mt-1"><?= number_format($available_count) ?></div>
+                    </div>
+                    <div class="w-9 h-9 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center text-sm shrink-0 transition-transform duration-200 group-hover:scale-110">
+                        <i class="fas fa-inbox"></i>
+                    </div>
+                </div>
+                <div class="text-[10.5px] text-slate-400 font-medium mt-2">Unclaimed — first to open it gets it</div>
+            </a>
+
+            <!-- Under evaluation -->
+            <div class="bg-white border border-slate-200 rounded-2xl p-4 shadow-sm hover:shadow-md transition-shadow duration-200">
+                <div class="flex items-start justify-between">
+                    <div>
+                        <div class="text-[10.5px] font-semibold text-slate-400 uppercase tracking-wide">Under Evaluation</div>
+                        <div class="text-2xl font-extrabold text-indigo-600 mt-1"><?= number_format($stats['under_evaluation']) ?></div>
+                    </div>
+                    <div class="w-9 h-9 rounded-xl bg-indigo-50 text-indigo-600 flex items-center justify-center text-sm shrink-0">
+                        <i class="fas fa-magnifying-glass"></i>
+                    </div>
+                </div>
+                <div class="text-[10.5px] text-slate-400 font-medium mt-2">Currently being reviewed by you</div>
+            </div>
+
+            <!-- Approved -->
+            <div class="bg-white border border-slate-200 rounded-2xl p-4 shadow-sm hover:shadow-md transition-shadow duration-200">
+                <div class="flex items-start justify-between">
+                    <div>
+                        <div class="text-[10.5px] font-semibold text-slate-400 uppercase tracking-wide">Approved</div>
+                        <div class="text-2xl font-extrabold text-emerald-600 mt-1"><?= number_format($stats['approved']) ?></div>
+                    </div>
+                    <div class="w-9 h-9 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center text-sm shrink-0">
+                        <i class="fas fa-circle-check"></i>
+                    </div>
+                </div>
+                <div class="text-[10.5px] text-slate-400 font-medium mt-2">Approved applications you evaluated</div>
+            </div>
+
+        </div>
 
         <!-- Quick Access -->
-        <p class="sec-label fade-in d1">Quick Access</p>
-        <div class="quick-row fade-in d2">
+        <p class="text-[9.5px] font-bold tracking-[.08em] uppercase text-slate-400 mb-2 fade-in" style="animation-delay:.05s">
+            Quick Access
+        </p>
+        <div class="grid grid-cols-3 gap-2.5 mb-5 fade-in" style="animation-delay:.1s">
 
-            <a href="applications.php" class="quick-btn">
-                <div class="quick-icon" style="background:#eff6ff;color:#3b82f6;">
+            <a href="applications.php"
+                class="group bg-white border border-slate-200 rounded-2xl px-2 py-3.5 flex flex-col items-center gap-2 text-center no-underline text-slate-500 font-bold text-[11px] transition-all duration-200 hover:bg-slate-50 hover:-translate-y-[3px] hover:shadow-lg hover:shadow-slate-900/10 active:scale-[.97]">
+                <div class="w-9 h-9 rounded-[10px] flex items-center justify-center text-sm bg-blue-50 text-blue-500">
                     <i class="fas fa-list"></i>
                 </div>
                 My Assignments
             </a>
 
-            <a href="applications.php?status=for_compliance" class="quick-btn">
-                <div class="quick-icon" style="background:#fffbeb;color:#d97706;">
+            <a href="applications.php?status=for_compliance"
+                class="group bg-white border border-slate-200 rounded-2xl px-2 py-3.5 flex flex-col items-center gap-2 text-center no-underline text-slate-500 font-bold text-[11px] transition-all duration-200 hover:bg-slate-50 hover:-translate-y-[3px] hover:shadow-lg hover:shadow-slate-900/10 active:scale-[.97]">
+                <div class="w-9 h-9 rounded-[10px] flex items-center justify-center text-sm bg-amber-50 text-amber-600">
                     <i class="fas fa-triangle-exclamation"></i>
                 </div>
                 For Compliance
             </a>
 
-            <a href="reports.php" class="quick-btn">
-                <div class="quick-icon" style="background:#ecfdf5;color:#059669;">
+            <a href="reports.php"
+                class="group bg-white border border-slate-200 rounded-2xl px-2 py-3.5 flex flex-col items-center gap-2 text-center no-underline text-slate-500 font-bold text-[11px] transition-all duration-200 hover:bg-slate-50 hover:-translate-y-[3px] hover:shadow-lg hover:shadow-slate-900/10 active:scale-[.97]">
+                <div class="w-9 h-9 rounded-[10px] flex items-center justify-center text-sm bg-emerald-50 text-emerald-600">
                     <i class="fas fa-chart-bar"></i>
                 </div>
                 Reports
@@ -474,128 +361,60 @@ $initials = count($parts) >= 2
 
         </div>
 
-        <!-- KPI Stats — uses .z-stats + .kpi-card from dashboard.css -->
-        <p class="sec-label fade-in d2">Overview</p>
-        <div class="z-stats fade-in d3">
 
-            <!-- Total -->
-            <div class="kpi-card c-blue">
-                <div class="kpi-top">
-                    <div>
-                        <div class="kpi-label">Total Applications</div>
-                        <div class="kpi-value c-blue"><?= number_format($stats['total']) ?></div>
-                    </div>
-                    <div class="kpi-icon c-blue"><i class="fas fa-file-lines"></i></div>
-                </div>
-                <div class="kpi-sub">All statuses combined</div>
-            </div>
+        <!-- My Assigned Applications + Status Breakdown -->
+        <div class="grid grid-cols-1 lg:grid-cols-[1.6fr_1fr] gap-4 fade-in" style="animation-delay:.2s">
 
-            <!-- Assigned to me 
-            <div class="kpi-card c-amber">
-                <div class="kpi-top">
-                    <div>
-                        <div class="kpi-label">Assigned to Me</div>
-                        <div class="kpi-value c-amber"><?= number_format($my_assigned_count) ?></div>
-                    </div>
-                    <div class="kpi-icon c-amber"><i class="fas fa-user-check"></i></div>
-                </div>
-                <div class="kpi-sub">Active assignments</div>
-            </div>-->
-
-            <!-- Available to claim -->
-            <a href="applications.php?status=available" class="kpi-card c-green" style="text-decoration:none;">
-                <div class="kpi-top">
-                    <div>
-                        <div class="kpi-label">Available</div>
-                        <div class="kpi-value c-green"><?= number_format($available_count) ?></div>
-                    </div>
-                    <div class="kpi-icon c-green"><i class="fas fa-inbox"></i></div>
-                </div>
-                <div class="kpi-sub">Unclaimed — first to open it gets it</div>
-            </a>
-
-            <!-- Under evaluation -->
-            <div class="kpi-card c-indigo">
-                <div class="kpi-top">
-                    <div>
-                        <div class="kpi-label">Under Evaluation</div>
-                        <div class="kpi-value c-indigo"><?= number_format($stats['under_evaluation']) ?></div>
-                    </div>
-                    <div class="kpi-icon c-indigo"><i class="fas fa-magnifying-glass"></i></div>
-                </div>
-                <div class="kpi-sub">Currently being reviewed</div>
-            </div>
-
-            <!-- Approved -->
-            <div class="kpi-card c-green">
-                <div class="kpi-top">
-                    <div>
-                        <div class="kpi-label">Approved</div>
-                        <div class="kpi-value c-green"><?= number_format($stats['approved']) ?></div>
-                    </div>
-                    <div class="kpi-icon c-green"><i class="fas fa-circle-check"></i></div>
-                </div>
-                <div class="kpi-sub">All approved applications</div>
-            </div>
-
-        </div>
-
-        <!-- My Assigned Applications — uses .card + .card-head from dashboard.css -->
-        <div class="z-mid fade-in d4">
-            <div class="card">
-                <div class="card-head">
-                    <span class="card-title">
-                        <span class="ctdot" style="background:var(--blue-lt)"></span>
+            <!-- My Assigned Applications -->
+            <div class="bg-white border border-slate-200 rounded-2xl p-4 shadow-sm">
+                <div class="flex items-center justify-between mb-2">
+                    <span class="flex items-center gap-2 text-[13px] font-extrabold text-slate-700">
+                        <span class="w-2 h-2 rounded-full bg-blue-400"></span>
                         My Assigned Applications
                     </span>
-                    <a href="applications.php" class="card-link">
-                        View all <i class="fas fa-arrow-right" style="font-size:9px"></i>
+                    <a href="applications.php"
+                        class="text-[11px] font-bold text-blue-500 hover:text-blue-600 no-underline flex items-center gap-1">
+                        View all <i class="fas fa-arrow-right text-[9px]"></i>
                     </a>
                 </div>
 
-                <div class="app-list">
+                <div class="flex flex-col">
                     <?php if (empty($my_applications)): ?>
-                        <div class="empty-state">
-                            <i class="fas fa-inbox"></i>
-                            <p>No applications assigned yet</p>
-                            <span>Applications assigned to you will appear here once processed.</span>
+                        <div class="py-10 px-4 text-center">
+                            <i class="fas fa-inbox text-3xl text-slate-200 block mb-2.5"></i>
+                            <p class="text-[12.5px] font-semibold text-slate-400">No applications assigned yet</p>
+                            <span class="text-[11px] text-slate-400/80">Applications assigned to you will appear here once processed.</span>
                         </div>
                     <?php else: ?>
                         <?php foreach ($my_applications as $app): ?>
                             <?php
                             $status     = strtolower($app['status'] ?? 'unknown');
                             $statusText = str_replace('_', ' ', ucwords($status));
-
-                            $pill = match ($status) {
-                                'approved'         => 'sp-approved',
-                                'under_evaluation' => 'sp-under',
-                                'for_compliance'   => 'sp-compliance',
-                                'disapproved'      => 'sp-disapproved',
-                                'assign'           => 'sp-assigned',
-                                'pending'          => 'sp-assigned',
-                                'assigned'         => 'sp-assigned',
-                                'resubmitted'      => 'sp-under',
-                                default            => 'sp-default',
-                            };
+                            $pillClass  = pill_classes($status);
 
                             $np  = explode(' ', trim($app['applicant_name']));
                             $avi = strtoupper(count($np) >= 2
                                 ? substr($np[0], 0, 1) . substr(end($np), 0, 1)
                                 : substr($app['applicant_name'], 0, 2));
                             ?>
-                            <a href="view-application.php?id=<?= (int)$app['id'] ?>" class="app-row">
-                                <div class="app-avatar"><?= htmlspecialchars($avi) ?></div>
-                                <div class="app-info">
-                                    <div class="app-name"><?= htmlspecialchars($app['applicant_name']) ?></div>
-                                    <div class="app-meta">
+                            <a href="view-application.php?id=<?= (int)$app['id'] ?>"
+                                class="flex items-center gap-2.5 py-2.5 px-1 border-b border-slate-100 last:border-0 rounded-xl no-underline text-inherit transition-colors duration-150 hover:bg-slate-50">
+                                <div class="w-9 h-9 shrink-0 rounded-[10px] bg-indigo-50 text-indigo-600 text-[10.5px] font-extrabold tracking-wide flex items-center justify-center">
+                                    <?= htmlspecialchars($avi) ?>
+                                </div>
+                                <div class="flex-1 min-w-0">
+                                    <div class="text-[12.5px] font-bold text-slate-800 truncate"><?= htmlspecialchars($app['applicant_name']) ?></div>
+                                    <div class="text-[10.5px] text-slate-400 font-medium mt-0.5 truncate">
                                         <?= htmlspecialchars($app['rsf_number'] ?? '—') ?>
                                         &nbsp;·&nbsp;<?= htmlspecialchars($app['position_title'] ?? '—') ?>
                                         &nbsp;·&nbsp;<?= htmlspecialchars($app['country'] ?? '—') ?>
                                     </div>
                                 </div>
-                                <div class="app-right">
-                                    <span class="status-pill <?= $pill ?>"><?= htmlspecialchars($statusText) ?></span>
-                                    <div class="app-date">
+                                <div class="text-right shrink-0">
+                                    <span class="inline-block text-[9.5px] font-bold tracking-wider uppercase px-2.5 py-[3px] rounded-full <?= $pillClass ?>">
+                                        <?= htmlspecialchars($statusText) ?>
+                                    </span>
+                                    <div class="text-[9.5px] text-slate-400 font-medium mt-[3px]">
                                         <?= $app['updated_at'] ? date('M d, Y', strtotime($app['updated_at'])) : '—' ?>
                                     </div>
                                 </div>
@@ -604,48 +423,48 @@ $initials = count($parts) >= 2
                     <?php endif; ?>
                 </div>
 
-            </div><!-- /card -->
+            </div><!-- /My Assigned Applications -->
 
-            <!-- Status breakdown side-panel (fills the grid's right column on desktop) -->
-            <div class="card fade-in d5">
-                <div class="card-head">
-                    <span class="card-title">
-                        <span class="ctdot" style="background:var(--indigo)"></span>
+            <!-- Status Breakdown -->
+            <div class="bg-white border border-slate-200 rounded-2xl p-4 shadow-sm">
+                <div class="flex items-center justify-between mb-3">
+                    <span class="flex items-center gap-2 text-[13px] font-extrabold text-slate-700">
+                        <span class="w-2 h-2 rounded-full bg-indigo-600"></span>
                         Status Breakdown
                     </span>
                 </div>
 
                 <?php
                 $breakdown = [
-                    ['label' => 'Assign',            'key' => 'assign',             'dot' => '#3b82f6'],
-                    ['label' => 'Under Evaluation',  'key' => 'under_evaluation',   'dot' => '#4f46e5'],
+                    ['label' => 'Assign',           'key' => 'assign',           'dot' => '#3b82f6'],
+                    ['label' => 'Under Evaluation', 'key' => 'under_evaluation', 'dot' => '#4f46e5'],
                     ['label' => 'For Compliance',    'key' => 'for_compliance',   'dot' => '#d97706'],
-                    ['label' => 'Resubmitted',       'key' => 'resubmitted',        'dot' => '#ca8a04'],
-                    ['label' => 'Approved',          'key' => 'approved',           'dot' => '#059669'],
+                    ['label' => 'Resubmitted',       'key' => 'resubmitted',      'dot' => '#ca8a04'],
+                    ['label' => 'Approved',          'key' => 'approved',         'dot' => '#059669'],
                 ];
                 $total = max($stats['total'], 1);
                 foreach ($breakdown as $b):
                     $pct = round(($stats[$b['key']] / $total) * 100);
                 ?>
-                    <div class="s-row">
-                        <span class="s-dot" style="background:<?= $b['dot'] ?>"></span>
-                        <span class="s-name"><?= $b['label'] ?></span>
-                        <span class="s-num" style="color:<?= $b['dot'] ?>"><?= number_format($stats[$b['key']]) ?></span>
-                        <div class="s-bar-wrap">
-                            <div class="s-bar-fill" style="width:<?= $pct ?>%;background:<?= $b['dot'] ?>"></div>
+                    <div class="flex items-center gap-2 py-2">
+                        <span class="w-2 h-2 rounded-full shrink-0" style="background:<?= $b['dot'] ?>"></span>
+                        <span class="text-[11px] font-semibold text-slate-600 w-[92px] shrink-0 truncate"><?= $b['label'] ?></span>
+                        <span class="text-[11px] font-bold w-7 text-right shrink-0" style="color:<?= $b['dot'] ?>"><?= number_format($stats[$b['key']]) ?></span>
+                        <div class="flex-1 h-1.5 bg-slate-100 rounded-full overflow-hidden">
+                            <div class="h-full rounded-full transition-all duration-500" style="width:<?= $pct ?>%;background:<?= $b['dot'] ?>"></div>
                         </div>
                     </div>
                 <?php endforeach; ?>
 
-            </div><!-- /status card -->
+            </div><!-- /Status Breakdown -->
 
-        </div><!-- /z-mid -->
+        </div><!-- /grid -->
 
     </div><!-- /main -->
 
 
     <!-- ══════════════════════════════════════════
-         FLOATING DOCK  (exact dashboard.php structure)
+         FLOATING DOCK — unchanged
     ══════════════════════════════════════════ -->
     <div class="dock-wrap">
         <nav class="dock">
@@ -700,6 +519,8 @@ $initials = count($parts) >= 2
             }).toUpperCase();
     </script>
     <script type="module" src="../js/main.js"></script>
+
+    <?php include '../includes/login_toast.php'; ?>
 
 </body>
 

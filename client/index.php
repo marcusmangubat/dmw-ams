@@ -87,486 +87,15 @@ $first    = explode(' ', trim($client_name))[0] ?: $client_name;
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Client Dashboard – DMW Regional Office IV-A</title>
     <link rel="icon" type="image/png" href="https://dmw.gov.ph/images/dmw_tahanan_ng_ofw_colored.png">
-
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800&family=DM+Serif+Display&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
     <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
-
     <link rel="stylesheet" href="../css/dashboard.css">
+    <script src="https://cdn.tailwindcss.com"></script>
 
     <style>
-        /* ── Layout ── */
-        .main {
-            max-width: 960px;
-            margin: 0 auto;
-            padding: 14px 14px calc(var(--dock-h) + 36px + env(safe-area-inset-bottom));
-        }
-
-        /* ── Section label ── */
-        .sec-label {
-            font-size: 9.5px;
-            font-weight: 700;
-            letter-spacing: .08em;
-            text-transform: uppercase;
-            color: var(--text3);
-            margin-bottom: 8px;
-        }
-
-        /* ── Quick action cards ── */
-        .quick-grid {
-            display: grid;
-            grid-template-columns: repeat(3, 1fr);
-            gap: 10px;
-            margin-bottom: 12px;
-        }
-
-        .quick-btn {
-            background: var(--card);
-            border: 1px solid var(--border);
-            border-radius: 14px;
-            padding: 14px 8px 12px;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            gap: 7px;
-            text-decoration: none;
-            color: var(--text2);
-            font-size: 11px;
-            font-weight: 700;
-            text-align: center;
-            cursor: pointer;
-            transition: background .18s, transform .18s, box-shadow .18s;
-            border: none;
-            font-family: 'DM Sans', sans-serif;
-        }
-
-        .quick-btn:hover {
-            background: #f4f6fb;
-            transform: translateY(-3px);
-            box-shadow: 0 8px 20px -4px rgba(11, 31, 75, .1);
-        }
-
-        .quick-btn:active {
-            transform: scale(.97);
-        }
-
-        .quick-icon {
-            width: 38px;
-            height: 38px;
-            border-radius: 11px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 15px;
-        }
-
-        /* ── KPI cards (reuse z-stats + kpi-card from css) ── */
-
-        /* ── Application list card ── */
-        .card {
-            background: var(--card);
-            border: 1px solid var(--border);
-            border-radius: 14px;
-            overflow: hidden;
-            margin-bottom: 10px;
-        }
-
-        .card-head {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            padding: 12px 16px;
-            border-bottom: 1px solid var(--border);
-            background: var(--surface);
-        }
-
-        .card-title {
-            font-size: 10.5px;
-            font-weight: 700;
-            letter-spacing: .07em;
-            text-transform: uppercase;
-            color: var(--text2);
-            display: flex;
-            align-items: center;
-            gap: 6px;
-        }
-
-        .ctdot {
-            width: 7px;
-            height: 7px;
-            border-radius: 50%;
-        }
-
-        .card-link {
-            font-size: 11px;
-            font-weight: 600;
-            color: var(--blue-lt);
-            text-decoration: none;
-            display: flex;
-            align-items: center;
-            gap: 4px;
-            opacity: .75;
-            transition: opacity .2s;
-        }
-
-        .card-link:hover {
-            opacity: 1;
-        }
-
-        /* ── App rows ── */
-        .app-row {
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            padding: 11px 16px;
-            border-bottom: 1px solid var(--border);
-            text-decoration: none;
-            color: inherit;
-            transition: background .14s;
-        }
-
-        .app-row:last-child {
-            border-bottom: none;
-        }
-
-        .app-row:hover {
-            background: var(--surface);
-        }
-
-        .app-avatar {
-            width: 36px;
-            height: 36px;
-            border-radius: 10px;
-            background: #eff6ff;
-            color: var(--blue);
-            font-size: 11px;
-            font-weight: 800;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            flex-shrink: 0;
-        }
-
-        .app-info {
-            flex: 1;
-            min-width: 0;
-        }
-
-        .app-name {
-            font-size: 12.5px;
-            font-weight: 700;
-            color: var(--text1);
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
-        }
-
-        .app-meta {
-            font-size: 10.5px;
-            color: var(--text3);
-            font-weight: 500;
-            margin-top: 1px;
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
-        }
-
-        .app-right {
-            text-align: right;
-            flex-shrink: 0;
-        }
-
-        .app-date {
-            font-size: 10px;
-            color: var(--text3);
-            font-weight: 500;
-            margin-top: 3px;
-        }
-
-        .status-pill {
-            display: inline-block;
-            font-size: 9.5px;
-            font-weight: 700;
-            letter-spacing: .04em;
-            text-transform: uppercase;
-            padding: 3px 10px;
-            border-radius: 99px;
-        }
-
-        .sp-approved {
-            background: #d1fae5;
-            color: #065f46;
-        }
-
-        .sp-under {
-            background: #eef2ff;
-            color: #3730a3;
-        }
-
-        .sp-compliance {
-            background: #fff7ed;
-            color: #92400e;
-        }
-
-        .sp-assigned {
-            background: #eff6ff;
-            color: #1e40af;
-        }
-
-        .sp-disapproved {
-            background: #fee2e2;
-            color: #991b1b;
-        }
-
-        .sp-pending {
-            background: #f1f5f9;
-            color: #475569;
-        }
-
-        .sp-default {
-            background: #f1f5f9;
-            color: #475569;
-        }
-
-        /* Status banner */
-        .status-banner {
-            margin: 0 16px 16px;
-            border-radius: 12px;
-            padding: 14px 16px;
-            border: 1px solid;
-        }
-
-        .status-banner h4 {
-            font-size: 12.5px;
-            font-weight: 800;
-            margin-bottom: 4px;
-        }
-
-        .status-banner p {
-            font-size: 11.5px;
-            font-weight: 500;
-            line-height: 1.5;
-        }
-
-        .status-banner-btns {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 8px;
-            margin-top: 12px;
-        }
-
-        .sb-btn {
-            display: inline-flex;
-            align-items: center;
-            gap: 6px;
-            padding: 8px 16px;
-            border-radius: 9px;
-            font-size: 11.5px;
-            font-weight: 700;
-            text-decoration: none;
-            transition: opacity .18s;
-        }
-
-        .sb-btn:hover {
-            opacity: .85;
-        }
-
-        /* Empty state */
-        .empty-state {
-            padding: 36px 16px;
-            text-align: center;
-        }
-
-        .empty-state i {
-            font-size: 30px;
-            color: var(--border);
-            display: block;
-            margin-bottom: 10px;
-        }
-
-        .empty-state p {
-            font-size: 12.5px;
-            font-weight: 600;
-            color: var(--text3);
-        }
-
-        .empty-state span {
-            font-size: 11px;
-            color: var(--text3);
-        }
-
-        .empty-state a {
-            color: var(--blue-lt);
-            font-weight: 600;
-            text-decoration: none;
-        }
-
-        /* ── Modals ── */
-        .modal-overlay {
-            position: fixed;
-            inset: 0;
-            background: rgba(11, 31, 75, .6);
-            backdrop-filter: blur(4px);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            z-index: 500;
-            padding: 16px;
-        }
-
-        .modal-overlay.hidden {
-            display: none;
-        }
-
-        .modal-box {
-            background: #fff;
-            border-radius: 18px;
-            width: 100%;
-            max-width: 560px;
-            max-height: 90vh;
-            overflow-y: auto;
-            box-shadow: 0 24px 60px rgba(11, 31, 75, .3);
-        }
-
-        .modal-head {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            padding: 16px 18px;
-            border-bottom: 1px solid var(--border);
-            position: sticky;
-            top: 0;
-            background: #fff;
-            border-radius: 18px 18px 0 0;
-            z-index: 2;
-        }
-
-        .modal-head h3 {
-            font-family: 'DM Serif Display', serif;
-            font-size: 16px;
-            color: var(--navy);
-            display: flex;
-            align-items: center;
-            gap: 9px;
-        }
-
-        .modal-close {
-            width: 30px;
-            height: 30px;
-            border-radius: 8px;
-            border: 1px solid var(--border);
-            background: var(--surface);
-            color: var(--text2);
-            font-size: 15px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            cursor: pointer;
-            transition: background .15s;
-            flex-shrink: 0;
-        }
-
-        .modal-close:hover {
-            background: var(--border);
-        }
-
-        .modal-body {
-            padding: 18px;
-        }
-
-        .modal-footer {
-            display: flex;
-            justify-content: flex-end;
-            gap: 8px;
-            padding: 14px 18px;
-            border-top: 1px solid var(--border);
-            background: var(--surface);
-            border-radius: 0 0 18px 18px;
-        }
-
-        .modal-btn {
-            padding: 9px 20px;
-            border-radius: 10px;
-            font-size: 12.5px;
-            font-weight: 700;
-            cursor: pointer;
-            border: none;
-            font-family: 'DM Sans', sans-serif;
-            transition: opacity .18s;
-        }
-
-        .modal-btn:hover {
-            opacity: .88;
-        }
-
-        .modal-btn-secondary {
-            background: var(--surface);
-            border: 1px solid var(--border);
-            color: var(--text2);
-        }
-
-        .modal-btn-primary {
-            background: var(--blue);
-            color: #fff;
-        }
-
-        /* Warning modal content */
-        .warn-list {
-            padding-left: 18px;
-            margin: 10px 0 0;
-        }
-
-        .warn-list li {
-            font-size: 12.5px;
-            color: var(--text2);
-            line-height: 1.6;
-            margin-bottom: 6px;
-        }
-
-        .warn-box {
-            background: #fffbeb;
-            border: 1px solid #fde68a;
-            border-radius: 11px;
-            padding: 12px 14px;
-            margin-top: 12px;
-        }
-
-        .warn-box p {
-            font-size: 12px;
-            font-weight: 600;
-            color: #92400e;
-        }
-
-        .warn-box span {
-            font-size: 11.5px;
-            color: #92400e;
-        }
-
-        .checkbox-row {
-            display: flex;
-            align-items: center;
-            gap: 9px;
-            margin-top: 14px;
-            padding-top: 12px;
-            border-top: 1px solid var(--border);
-        }
-
-        .checkbox-row label {
-            font-size: 12px;
-            color: var(--text2);
-            font-weight: 500;
-            cursor: pointer;
-        }
-
-        /* Fade-in */
-        .fade-in {
-            opacity: 0;
-            transform: translateY(10px);
-            animation: fi2 .4s ease forwards;
-        }
-
         @keyframes fi2 {
             to {
                 opacity: 1;
@@ -574,28 +103,8 @@ $first    = explode(' ', trim($client_name))[0] ?: $client_name;
             }
         }
 
-        .d1 {
-            animation-delay: .04s
-        }
-
-        .d2 {
-            animation-delay: .08s
-        }
-
-        .d3 {
-            animation-delay: .12s
-        }
-
-        .d4 {
-            animation-delay: .16s
-        }
-
-        .d5 {
-            animation-delay: .20s
-        }
-
-        .d6 {
-            animation-delay: .24s
+        .modal-overlay.overlay-hidden {
+            display: none;
         }
 
         .topbar-brand img {
@@ -604,7 +113,6 @@ $first    = explode(' ', trim($client_name))[0] ?: $client_name;
             display: block;
             background: transparent;
             filter: none;
-
         }
     </style>
 </head>
@@ -616,7 +124,7 @@ $first    = explode(' ', trim($client_name))[0] ?: $client_name;
     ══════════════════════════════════════════ -->
     <header class="topbar">
         <div class="topbar-brand">
-            <img src="https://dmw.gov.ph/images/dmw_tahanan_ng_ofw_colored.png" alt="DMW">
+            <img src="https://dmw.gov.ph/images/dmw_tahanan_ng_ofw_colored.png" alt="DMW" class="w-[42px] h-auto block bg-transparent [filter:none]">
             <div class="brand-divider"></div>
             <div class="brand-text">
                 <h1>Department of Migrant Workers</h1>
@@ -651,28 +159,28 @@ $first    = explode(' ', trim($client_name))[0] ?: $client_name;
     <!-- ══════════════════════════════════════════
          MAIN CONTENT
     ══════════════════════════════════════════ -->
-    <div class="main">
+    <div id="mainContent" class="max-w-[960px] mx-auto px-3.5 pt-3.5 pb-[calc(var(--dock-h)_+_36px_+_env(safe-area-inset-bottom))]">
 
         <!-- Quick Actions -->
-        <p class="sec-label fade-in d1">Quick Actions</p>
-        <div class="quick-grid fade-in d2">
+        <p class="text-[9.5px] font-bold tracking-[.08em] uppercase text-[var(--text3)] mb-2 opacity-0 translate-y-2.5 [animation:fi2_0.4s_ease_forwards] [animation-delay:.04s]">Quick Actions</p>
+        <div class="grid grid-cols-3 gap-2.5 mb-3 opacity-0 translate-y-2.5 [animation:fi2_0.4s_ease_forwards] [animation-delay:.08s]">
 
-            <button class="quick-btn" onclick="showBrowseWarningModal()">
-                <div class="quick-icon" style="background:#eff6ff;color:#3b82f6;">
+            <button class="bg-[var(--card)] border-none rounded-[14px] pt-3.5 px-2 pb-3 flex flex-col items-center gap-[7px] no-underline text-[var(--text2)] text-[11px] font-bold text-center cursor-pointer transition-all hover:bg-[#f4f6fb] hover:-translate-y-[3px] hover:shadow-[0_8px_20px_-4px_rgba(11,31,75,0.1)] active:scale-[.97]" onclick="showBrowseWarningModal()">
+                <div class="w-[38px] h-[38px] rounded-[11px] flex items-center justify-center text-[15px] bg-[#eff6ff] text-[#3b82f6]">
                     <i class="fas fa-briefcase"></i>
                 </div>
                 Browse Jobs
             </button>
 
-            <a href="my-applications.php" class="quick-btn">
-                <div class="quick-icon" style="background:#eef2ff;color:#6366f1;">
+            <a href="my-applications.php" class="bg-[var(--card)] border-none rounded-[14px] pt-3.5 px-2 pb-3 flex flex-col items-center gap-[7px] no-underline text-[var(--text2)] text-[11px] font-bold text-center cursor-pointer transition-all hover:bg-[#f4f6fb] hover:-translate-y-[3px] hover:shadow-[0_8px_20px_-4px_rgba(11,31,75,0.1)] active:scale-[.97]">
+                <div class="w-[38px] h-[38px] rounded-[11px] flex items-center justify-center text-[15px] bg-[#eef2ff] text-[#6366f1]">
                     <i class="fas fa-file-lines"></i>
                 </div>
                 My Applications
             </a>
 
-            <a href="notifications.php" class="quick-btn">
-                <div class="quick-icon" style="background:#ecfdf5;color:#059669;">
+            <a href="notifications.php" class="bg-[var(--card)] border-none rounded-[14px] pt-3.5 px-2 pb-3 flex flex-col items-center gap-[7px] no-underline text-[var(--text2)] text-[11px] font-bold text-center cursor-pointer transition-all hover:bg-[#f4f6fb] hover:-translate-y-[3px] hover:shadow-[0_8px_20px_-4px_rgba(11,31,75,0.1)] active:scale-[.97]">
+                <div class="w-[38px] h-[38px] rounded-[11px] flex items-center justify-center text-[15px] bg-[#ecfdf5] text-[#059669]">
                     <i class="fas fa-bell"></i>
                 </div>
                 Notifications
@@ -681,8 +189,8 @@ $first    = explode(' ', trim($client_name))[0] ?: $client_name;
         </div>
 
         <!-- KPI Stats -->
-        <p class="sec-label fade-in d2">Overview</p>
-        <div class="z-stats fade-in d3">
+        <p class="text-[9.5px] font-bold tracking-[.08em] uppercase text-[var(--text3)] mb-2 opacity-0 translate-y-2.5 [animation:fi2_0.4s_ease_forwards] [animation-delay:.08s]">Overview</p>
+        <div class="z-stats opacity-0 translate-y-2.5 [animation:fi2_0.4s_ease_forwards] [animation-delay:.12s]">
 
             <div class="kpi-card c-blue">
                 <div class="kpi-top">
@@ -745,56 +253,56 @@ $first    = explode(' ', trim($client_name))[0] ?: $client_name;
         </div>
 
         <!-- My Recent Applications -->
-        <p class="sec-label fade-in d4" style="margin-top:1.3rem">My Recent Applications</p>
-        <div class="card fade-in d4">
-            <div class="card-head">
-                <span class="card-title">
-                    <span class="ctdot" style="background:var(--blue-lt)"></span>
+        <p class="text-[9.5px] font-bold tracking-[.08em] uppercase text-[var(--text3)] mb-2 opacity-0 translate-y-2.5 [animation:fi2_0.4s_ease_forwards] [animation-delay:.16s]" style="margin-top:1.3rem">My Recent Applications</p>
+        <div class="bg-[var(--card)] border border-[var(--border)] rounded-[14px] overflow-hidden mb-2.5 opacity-0 translate-y-2.5 [animation:fi2_0.4s_ease_forwards] [animation-delay:.16s]">
+            <div class="flex items-center justify-between py-3 px-4 border-b border-[var(--border)] bg-[var(--surface)]">
+                <span class="text-[10.5px] font-bold tracking-[.07em] uppercase text-[var(--text2)] flex items-center gap-1.5">
+                    <span class="w-[7px] h-[7px] rounded-full bg-[var(--blue-lt)]"></span>
                     Applications
                 </span>
-                <a href="my-applications.php" class="card-link">
-                    View all <i class="fas fa-arrow-right" style="font-size:9px"></i>
+                <a href="my-applications.php" class="text-[11px] font-semibold text-[var(--blue-lt)] no-underline flex items-center gap-1 opacity-75 transition-opacity hover:opacity-100">
+                    View all <i class="fas fa-arrow-right text-[9px]"></i>
                 </a>
             </div>
 
             <?php if (empty($my_apps)): ?>
-                <div class="empty-state">
-                    <i class="fas fa-inbox"></i>
-                    <p>No applications yet</p>
-                    <span><a href="jobs.php">Browse job opportunities</a> to submit your first application.</span>
+                <div class="py-9 px-4 text-center">
+                    <i class="fas fa-inbox text-3xl text-[var(--border)] block mb-2.5"></i>
+                    <p class="text-[12.5px] font-semibold text-[var(--text3)]">No applications yet</p>
+                    <span class="text-[11px] text-[var(--text3)]"><a href="jobs.php" class="text-[var(--blue-lt)] font-semibold no-underline">Browse job opportunities</a> to submit your first application.</span>
                 </div>
             <?php else: ?>
                 <?php foreach ($my_apps as $app): ?>
                     <?php
                     $s    = strtolower($app['status'] ?? '');
                     $stxt = str_replace('_', ' ', ucwords($s));
-                    $pill = match ($s) {
-                        'approved'         => 'sp-approved',
-                        'under_evaluation' => 'sp-under',
-                        'for_compliance'   => 'sp-compliance',
-                        'assign'           => 'sp-assigned',
-                        'assigned'         => 'sp-assigned',
-                        'disapproved'      => 'sp-disapproved',
-                        'resubmitted'      => 'sp-under',
-                        'unassign'         => 'sp-pending',
-                        'unassigned'       => 'sp-pending',
-                        'pending'          => 'sp-pending',
-                        default            => 'sp-default',
+                    $pillClasses = match ($s) {
+                        'approved'         => 'bg-[#d1fae5] text-[#065f46]',
+                        'under_evaluation' => 'bg-[#eef2ff] text-[#3730a3]',
+                        'for_compliance'   => 'bg-[#fff7ed] text-[#92400e]',
+                        'assign'           => 'bg-[#eff6ff] text-[#1e40af]',
+                        'assigned'         => 'bg-[#eff6ff] text-[#1e40af]',
+                        'disapproved'      => 'bg-[#fee2e2] text-[#991b1b]',
+                        'resubmitted'      => 'bg-[#eef2ff] text-[#3730a3]',
+                        'unassign'         => 'bg-[#f1f5f9] text-[#475569]',
+                        'unassigned'       => 'bg-[#f1f5f9] text-[#475569]',
+                        'pending'          => 'bg-[#f1f5f9] text-[#475569]',
+                        default            => 'bg-[#f1f5f9] text-[#475569]',
                     };
                     $posInitials = strtoupper(substr($app['position_title'] ?? 'J', 0, 2));
                     ?>
-                    <a href="edit-application.php?id=<?= (int) ($app['id'] ?? 0) ?>" class="app-row">
-                        <div class="app-avatar"><?= htmlspecialchars($posInitials) ?></div>
-                        <div class="app-info">
-                            <div class="app-name"><?= htmlspecialchars($app['position_title'] ?? '—') ?></div>
-                            <div class="app-meta">
+                    <a href="edit-application.php?id=<?= (int) ($app['id'] ?? 0) ?>" class="flex items-center gap-2.5 py-[11px] px-4 border-b border-[var(--border)] last:border-b-0 no-underline text-inherit transition-colors hover:bg-[var(--surface)]">
+                        <div class="w-9 h-9 rounded-[10px] bg-[#eff6ff] text-[var(--blue)] text-[11px] font-extrabold flex items-center justify-center flex-shrink-0"><?= htmlspecialchars($posInitials) ?></div>
+                        <div class="flex-1 min-w-0">
+                            <div class="text-[12.5px] font-bold text-[var(--text1)] whitespace-nowrap overflow-hidden text-ellipsis"><?= htmlspecialchars($app['position_title'] ?? '—') ?></div>
+                            <div class="text-[10.5px] text-[var(--text3)] font-medium mt-[1px] whitespace-nowrap overflow-hidden text-ellipsis">
                                 <?= htmlspecialchars($app['rsf_number'] ?? '—') ?>
                                 &nbsp;·&nbsp;<?= htmlspecialchars($app['worksite_country'] ?? '—') ?>
                             </div>
                         </div>
-                        <div class="app-right">
-                            <span class="status-pill <?= $pill ?>"><?= htmlspecialchars($stxt) ?></span>
-                            <div class="app-date">
+                        <div class="text-right flex-shrink-0">
+                            <span class="inline-block text-[9.5px] font-bold tracking-[.04em] uppercase py-[3px] px-2.5 rounded-full <?= $pillClasses ?>"><?= htmlspecialchars($stxt) ?></span>
+                            <div class="text-[10px] text-[var(--text3)] font-medium mt-[3px]">
                                 <?= $app['updated_at'] ? date('M d, Y', strtotime($app['updated_at'])) : '—' ?>
                             </div>
                         </div>
@@ -803,7 +311,7 @@ $first    = explode(' ', trim($client_name))[0] ?: $client_name;
             <?php endif; ?>
         </div>
 
-        <div class="card fade-in d5">
+        <div class="bg-[var(--card)] border border-[var(--border)] rounded-[14px] overflow-hidden mb-2.5 opacity-0 translate-y-2.5 [animation:fi2_0.4s_ease_forwards] [animation-delay:.20s]">
 
             <!-- Status banner -->
             <?php if ($latest_status): ?>
@@ -827,27 +335,27 @@ $first    = explode(' ', trim($client_name))[0] ?: $client_name;
                     default                                                    => 'Track your application progress in My Applications.',
                 };
                 ?>
-                <div class="status-banner"
+                <div class="mx-4 mb-4 rounded-xl py-3.5 px-4 border"
                     style="background:<?= $bannerColor['bg'] ?>;border-color:<?= $bannerColor['border'] ?>;">
-                    <h4 style="color:<?= $bannerColor['h'] ?>">
+                    <h4 class="text-[12.5px] font-extrabold mb-1" style="color:<?= $bannerColor['h'] ?>">
                         Latest Status: <?= htmlspecialchars(ucwords(str_replace('_', ' ', $latest_status))) ?>
                     </h4>
-                    <p style="color:<?= $bannerColor['p'] ?>"><?= $bannerMsg ?></p>
-                    <div class="status-banner-btns">
-                        <a href="my-applications.php" class="sb-btn" style="background:var(--navy);color:#fff;">
+                    <p class="text-[11.5px] font-medium leading-relaxed" style="color:<?= $bannerColor['p'] ?>"><?= $bannerMsg ?></p>
+                    <div class="flex flex-wrap gap-2 mt-3">
+                        <a href="my-applications.php" class="inline-flex items-center gap-1.5 py-2 px-4 rounded-[9px] text-[11.5px] font-bold no-underline transition-opacity hover:opacity-85" style="background:var(--navy);color:#fff;">
                             <i class="fas fa-file-lines"></i> View My Applications
                         </a>
-                        <a href="jobs.php" class="sb-btn" style="background:var(--card);border:1px solid var(--border);color:var(--text2);">
+                        <a href="jobs.php" class="inline-flex items-center gap-1.5 py-2 px-4 rounded-[9px] text-[11.5px] font-bold no-underline transition-opacity hover:opacity-85" style="background:var(--card);border:1px solid var(--border);color:var(--text2);">
                             <i class="fas fa-briefcase"></i> Browse More Jobs
                         </a>
                     </div>
                 </div>
             <?php else: ?>
-                <div class="status-banner" style="background:#eff6ff;border-color:#bfdbfe;">
-                    <h4 style="color:var(--navy)">Get Started</h4>
-                    <p style="color:var(--blue)">Browse job opportunities and apply for positions that match your qualifications.</p>
-                    <div class="status-banner-btns">
-                        <button onclick="showBrowseWarningModal()" class="sb-btn" style="background:var(--blue);color:#fff;">
+                <div class="mx-4 mb-4 rounded-xl py-3.5 px-4 border" style="background:#eff6ff;border-color:#bfdbfe;">
+                    <h4 class="text-[12.5px] font-extrabold mb-1" style="color:var(--navy)">Get Started</h4>
+                    <p class="text-[11.5px] font-medium leading-relaxed" style="color:var(--blue)">Browse job opportunities and apply for positions that match your qualifications.</p>
+                    <div class="flex flex-wrap gap-2 mt-3">
+                        <button onclick="showBrowseWarningModal()" class="inline-flex items-center gap-1.5 py-2 px-4 rounded-[9px] text-[11.5px] font-bold border-none cursor-pointer transition-opacity hover:opacity-85" style="background:var(--blue);color:#fff;">
                             <i class="fas fa-briefcase"></i> Browse Jobs
                         </button>
                     </div>
@@ -892,7 +400,7 @@ $first    = explode(' ', trim($client_name))[0] ?: $client_name;
 
             <div class="dk-div"></div>
 
-            <a href="setting.php" class="dk">
+            <a href="profile.php" class="dk">
                 <i class="fas fa-user-gear"></i>
                 <span class="dk-lbl">Profile</span>
             </a>
@@ -908,39 +416,39 @@ $first    = explode(' ', trim($client_name))[0] ?: $client_name;
     <!-- ══════════════════════════════════════════
          BROWSE WARNING MODAL
     ══════════════════════════════════════════ -->
-    <div id="browseWarningModal" class="modal-overlay hidden">
-        <div class="modal-box">
-            <div class="modal-head">
-                <h3>
+    <div id="browseWarningModal" class="modal-overlay overlay-hidden fixed inset-0 bg-[rgba(11,31,75,0.6)] backdrop-blur-sm flex items-center justify-center z-[500] p-4">
+        <div class="bg-white rounded-[18px] w-full max-w-[560px] max-h-[90vh] overflow-y-auto shadow-[0_24px_60px_rgba(11,31,75,0.3)]">
+            <div class="flex items-center justify-between py-4 px-[18px] border-b border-[var(--border)] sticky top-0 bg-white rounded-t-[18px] z-[2]">
+                <h3 class="font-['DM_Serif_Display'] text-base text-[var(--navy)] flex items-center gap-[9px]">
                     <span style="width:32px;height:32px;border-radius:9px;background:#fffbeb;display:flex;align-items:center;justify-content:center;color:#d97706;font-size:14px;flex-shrink:0;">
                         <i class="fas fa-shield-halved"></i>
                     </span>
                     Before Browsing Jobs
                 </h3>
-                <button class="modal-close" onclick="closeBrowseModal()"><i class="fas fa-xmark"></i></button>
+                <button class="w-[30px] h-[30px] rounded-lg border border-[var(--border)] bg-[var(--surface)] text-[var(--text2)] text-[15px] flex items-center justify-center cursor-pointer transition-colors flex-shrink-0 hover:bg-[var(--border)]" onclick="closeBrowseModal()"><i class="fas fa-xmark"></i></button>
             </div>
-            <div class="modal-body">
-                <p style="font-size:12.5px;font-weight:700;color:#92400e;margin-bottom:6px;">Only use official and verified job orders!</p>
-                <ul class="warn-list">
-                    <li>All positions come from <strong>approved RSF job orders</strong> issued by the <strong>Department of Migrant Workers (DMW)</strong>.</li>
-                    <li><strong>NEVER PAY ANYTHING</strong> before deployment — legitimate employers do not require upfront fees.</li>
-                    <li>Beware of <strong>illegal recruiters</strong>, social media offers, and "fixers" asking for money outside official channels.</li>
-                    <li>Always read the full RSF PDF before applying — it contains complete job details, salary, and contract terms.</li>
-                    <li>If something seems suspicious, contact DMW Regional Office IV-A immediately.</li>
+            <div class="p-[18px]">
+                <p class="text-[12.5px] font-bold text-[#92400e] mb-1.5">Only use official and verified job orders!</p>
+                <ul class="pl-[18px] mt-[10px]">
+                    <li class="text-[12.5px] text-[var(--text2)] leading-relaxed mb-1.5">All positions come from <strong>approved RSF job orders</strong> issued by the <strong>Department of Migrant Workers (DMW)</strong>.</li>
+                    <li class="text-[12.5px] text-[var(--text2)] leading-relaxed mb-1.5"><strong>NEVER PAY ANYTHING</strong> before deployment — legitimate employers do not require upfront fees.</li>
+                    <li class="text-[12.5px] text-[var(--text2)] leading-relaxed mb-1.5">Beware of <strong>illegal recruiters</strong>, social media offers, and "fixers" asking for money outside official channels.</li>
+                    <li class="text-[12.5px] text-[var(--text2)] leading-relaxed mb-1.5">Always read the full RSF PDF before applying — it contains complete job details, salary, and contract terms.</li>
+                    <li class="text-[12.5px] text-[var(--text2)] leading-relaxed mb-1.5">If something seems suspicious, contact DMW Regional Office IV-A immediately.</li>
                 </ul>
-                <div class="warn-box">
-                    <p>Hotline / Report Illegal Recruitment:</p>
-                    <span>DMW Hotline: <strong>1348</strong> (nationwide) or <strong>(02) 8722-1144</strong></span><br>
-                    <span style="font-size:11px;color:#78350f;">Official website: <strong>dmw.gov.ph</strong></span>
+                <div class="bg-[#fffbeb] border border-[#fde68a] rounded-[11px] py-3 px-3.5 mt-3">
+                    <p class="text-xs font-semibold text-[#92400e]">Hotline / Report Illegal Recruitment:</p>
+                    <span class="text-[11.5px] text-[#92400e]">DMW Hotline: <strong>1348</strong> (nationwide) or <strong>(02) 8722-1144</strong></span><br>
+                    <span class="text-[11px] text-[#78350f]">Official website: <strong>dmw.gov.ph</strong></span>
                 </div>
-                <div class="checkbox-row">
-                    <input type="checkbox" id="dontShowAgain" style="width:16px;height:16px;accent-color:var(--blue);cursor:pointer;">
-                    <label for="dontShowAgain">Do not show this message again today</label>
+                <div class="flex items-center gap-[9px] mt-3.5 pt-3 border-t border-[var(--border)]">
+                    <input type="checkbox" id="dontShowAgain" class="w-4 h-4 cursor-pointer accent-[var(--blue)]">
+                    <label for="dontShowAgain" class="text-xs text-[var(--text2)] font-medium cursor-pointer">Do not show this message again today</label>
                 </div>
             </div>
-            <div class="modal-footer">
-                <button class="modal-btn modal-btn-secondary" onclick="closeBrowseModal()">Cancel</button>
-                <button class="modal-btn modal-btn-primary" id="proceedBtn">
+            <div class="flex justify-end gap-2 py-[14px] px-[18px] border-t border-[var(--border)] bg-[var(--surface)] rounded-b-[18px]">
+                <button class="py-[9px] px-5 rounded-[10px] text-[12.5px] font-bold cursor-pointer border-none transition-opacity hover:opacity-[.88] bg-[var(--surface)] border border-[var(--border)] text-[var(--text2)]" onclick="closeBrowseModal()">Cancel</button>
+                <button class="py-[9px] px-5 rounded-[10px] text-[12.5px] font-bold cursor-pointer border-none transition-opacity hover:opacity-[.88] bg-[var(--blue)] text-white" id="proceedBtn">
                     Proceed to Jobs &nbsp;<i class="fas fa-arrow-right"></i>
                 </button>
             </div>
@@ -964,12 +472,12 @@ $first    = explode(' ', trim($client_name))[0] ?: $client_name;
             if (lastShown === today) {
                 window.location.href = 'jobs.php';
             } else {
-                document.getElementById('browseWarningModal').classList.remove('hidden');
+                document.getElementById('browseWarningModal').classList.remove('overlay-hidden');
             }
         }
 
         function closeBrowseModal() {
-            document.getElementById('browseWarningModal').classList.add('hidden');
+            document.getElementById('browseWarningModal').classList.add('overlay-hidden');
         }
 
         document.getElementById('proceedBtn').addEventListener('click', function() {
@@ -982,186 +490,17 @@ $first    = explode(' ', trim($client_name))[0] ?: $client_name;
 
         /* Close modal on backdrop click */
         document.getElementById('browseWarningModal').addEventListener('click', function(e) {
-            if (e.target === this) this.classList.add('hidden');
+            if (e.target === this) this.classList.add('overlay-hidden');
         });
     </script>
-    <!-- ══════════════════════════════════════════
-         PROFILE COMPLETION MODAL
-    ══════════════════════════════════════════ -->
+
+    <!--PROFILE COMPLETION MODAL -->
     <?php if ($show_profile_modal): ?>
-        <style>
-            /* Step indicator */
-            .profile-steps {
-                display: flex;
-                align-items: center;
-                gap: 0;
-                margin-bottom: 22px;
-            }
 
-            .step-node {
-                width: 28px;
-                height: 28px;
-                border-radius: 50%;
-                display: flex;
-                align-items: center;
-                justify-content: center;
-                font-size: 11px;
-                font-weight: 800;
-                flex-shrink: 0;
-                transition: background .2s, color .2s;
-            }
-
-            .step-node.done {
-                background: var(--blue);
-                color: #fff;
-            }
-
-            .step-node.active {
-                background: var(--navy);
-                color: #fff;
-            }
-
-            .step-node.idle {
-                background: var(--border);
-                color: var(--text3);
-            }
-
-            .step-line {
-                flex: 1;
-                height: 2px;
-                background: var(--border);
-                transition: background .2s;
-            }
-
-            .step-line.done {
-                background: var(--blue);
-            }
-
-            /* Step panels */
-            .step-panel {
-                display: none;
-            }
-
-            .step-panel.active {
-                display: block;
-            }
-
-            /* Form grid */
-            .pf-grid {
-                display: grid;
-                grid-template-columns: 1fr 1fr;
-                gap: 12px;
-            }
-
-            .pf-full {
-                grid-column: 1 / -1;
-            }
-
-            @media(max-width:500px) {
-                .pf-grid {
-                    grid-template-columns: 1fr;
-                }
-            }
-
-            /* Field */
-            .pf-field label {
-                display: block;
-                font-size: 10.5px;
-                font-weight: 700;
-                color: var(--text2);
-                letter-spacing: .04em;
-                text-transform: uppercase;
-                margin-bottom: 5px;
-            }
-
-            .pf-field input,
-            .pf-field select {
-                width: 100%;
-                padding: 9px 11px;
-                border: 1.5px solid var(--border);
-                border-radius: 9px;
-                font-family: 'DM Sans', sans-serif;
-                font-size: 13px;
-                color: var(--text1);
-                background: #fff;
-                transition: border-color .15s;
-                box-sizing: border-box;
-            }
-
-            .pf-field input:focus,
-            .pf-field select:focus {
-                outline: none;
-                border-color: var(--blue-lt);
-            }
-
-            .pf-field .req {
-                color: #ef4444;
-            }
-
-            /* Section heading */
-            .pf-section-heading {
-                font-family: 'DM Serif Display', serif;
-                font-size: 15px;
-                color: var(--navy);
-                margin-bottom: 14px;
-            }
-
-            .pf-subtitle {
-                font-size: 11.5px;
-                color: var(--text3);
-                margin-bottom: 18px;
-                line-height: 1.55;
-            }
-
-            /* Lock banner shown when profile incomplete */
-            .profile-lock-banner {
-                background: #fff7ed;
-                border: 1.5px solid #fed7aa;
-                border-radius: 12px;
-                padding: 14px 16px;
-                margin-bottom: 12px;
-                display: flex;
-                align-items: flex-start;
-                gap: 12px;
-            }
-
-            .profile-lock-banner i {
-                color: #f97316;
-                font-size: 18px;
-                margin-top: 2px;
-            }
-
-            .profile-lock-banner h4 {
-                font-size: 12.5px;
-                font-weight: 800;
-                color: #9a3412;
-            }
-
-            .profile-lock-banner p {
-                font-size: 11.5px;
-                color: #c2410c;
-                margin-top: 3px;
-                line-height: 1.5;
-            }
-
-            .profile-lock-banner button {
-                margin-top: 10px;
-                background: var(--navy);
-                color: #fff;
-                border: none;
-                padding: 8px 16px;
-                border-radius: 9px;
-                font-size: 12px;
-                font-weight: 700;
-                cursor: pointer;
-                font-family: 'DM Sans', sans-serif;
-            }
-        </style>
-
-        <div id="profileModal" class="modal-overlay" style="z-index:600;">
-            <div class="modal-box" style="max-width:600px;">
-                <div class="modal-head">
-                    <h3>
+        <div id="profileModal" class="modal-overlay fixed inset-0 bg-[rgba(11,31,75,0.6)] backdrop-blur-sm flex items-center justify-center p-4" style="z-index:600;">
+            <div class="bg-white rounded-[18px] w-full max-h-[90vh] overflow-y-auto shadow-[0_24px_60px_rgba(11,31,75,0.3)]" style="max-width:600px;">
+                <div class="flex items-center justify-between py-4 px-[18px] border-b border-[var(--border)] sticky top-0 bg-white rounded-t-[18px] z-[2]">
+                    <h3 class="font-['DM_Serif_Display'] text-base text-[var(--navy)] flex items-center gap-[9px]">
                         <span style="width:32px;height:32px;border-radius:9px;background:#eff6ff;display:flex;align-items:center;justify-content:center;color:var(--blue);font-size:14px;flex-shrink:0;">
                             <i class="fas fa-id-card"></i>
                         </span>
@@ -1169,31 +508,33 @@ $first    = explode(' ', trim($client_name))[0] ?: $client_name;
                     </h3>
                     <!-- No close button — must complete -->
                 </div>
-                <div class="modal-body">
+                <div class="p-[18px]">
 
                     <!-- Step indicator -->
-                    <div class="profile-steps" id="profileStepIndicator">
-                        <div class="step-node active" id="sn1">1</div>
-                        <div class="step-line" id="sl1"></div>
-                        <div class="step-node idle" id="sn2">2</div>
-                        <div class="step-line" id="sl2"></div>
-                        <div class="step-node idle" id="sn3">3</div>
+                    <div class="flex items-center gap-0 mb-[22px]" id="profileStepIndicator">
+                        <div class="w-7 h-7 rounded-full flex items-center justify-center text-[11px] font-extrabold flex-shrink-0 transition-colors bg-[var(--navy)] text-white" id="sn1">1</div>
+                        <div class="flex-1 h-0.5 bg-[var(--border)] transition-colors" id="sl1"></div>
+                        <div class="w-7 h-7 rounded-full flex items-center justify-center text-[11px] font-extrabold flex-shrink-0 transition-colors bg-[var(--border)] text-[var(--text3)]" id="sn2">2</div>
+                        <div class="flex-1 h-0.5 bg-[var(--border)] transition-colors" id="sl2"></div>
+                        <div class="w-7 h-7 rounded-full flex items-center justify-center text-[11px] font-extrabold flex-shrink-0 transition-colors bg-[var(--border)] text-[var(--text3)]" id="sn3">3</div>
                     </div>
 
                     <form id="profileForm">
 
                         <!-- ── STEP 1: Personal Info ── -->
-                        <div class="step-panel active" id="stepPanel1">
-                            <p class="pf-section-heading">Personal Information</p>
-                            <p class="pf-subtitle">Please provide accurate details. These will be used to match you with job opportunities.</p>
-                            <div class="pf-grid">
-                                <div class="pf-field">
-                                    <label>Citizenship <span class="req">*</span></label>
-                                    <input type="text" name="citizenship" value="Filipino" placeholder="e.g. Filipino" required>
+                        <div class="block" id="stepPanel1">
+                            <p class="font-['DM_Serif_Display'] text-[15px] text-[var(--navy)] mb-3.5">Personal Information</p>
+                            <p class="text-[11.5px] text-[var(--text3)] mb-[18px] leading-relaxed">Please provide accurate details. These will be used to match you with job opportunities.</p>
+                            <div class="grid grid-cols-1 min-[500px]:grid-cols-2 gap-3">
+                                <div>
+                                    <label class="block text-[10.5px] font-bold text-[var(--text2)] tracking-[.04em] uppercase mb-[5px]">Citizenship <span class="text-red-500">*</span></label>
+                                    <input type="text" name="citizenship" value="Filipino" placeholder="e.g. Filipino" required
+                                        class="w-full py-[9px] px-[11px] border-[1.5px] border-[var(--border)] rounded-[9px] text-[13px] text-[var(--text1)] bg-white transition-colors outline-none focus:border-[var(--blue-lt)] box-border">
                                 </div>
-                                <div class="pf-field">
-                                    <label>Civil Status <span class="req">*</span></label>
-                                    <select name="civil_status" required>
+                                <div>
+                                    <label class="block text-[10.5px] font-bold text-[var(--text2)] tracking-[.04em] uppercase mb-[5px]">Civil Status <span class="text-red-500">*</span></label>
+                                    <select name="civil_status" required
+                                        class="w-full py-[9px] px-[11px] border-[1.5px] border-[var(--border)] rounded-[9px] text-[13px] text-[var(--text1)] bg-white transition-colors outline-none focus:border-[var(--blue-lt)] box-border">
                                         <option value="">Select…</option>
                                         <option>Single</option>
                                         <option>Married</option>
@@ -1202,31 +543,35 @@ $first    = explode(' ', trim($client_name))[0] ?: $client_name;
                                         <option>Annulled</option>
                                     </select>
                                 </div>
-                                <div class="pf-field">
-                                    <label>Religion</label>
-                                    <input type="text" name="religion" placeholder="e.g. Catholic">
+                                <div>
+                                    <label class="block text-[10.5px] font-bold text-[var(--text2)] tracking-[.04em] uppercase mb-[5px]">Religion</label>
+                                    <input type="text" name="religion" placeholder="e.g. Catholic"
+                                        class="w-full py-[9px] px-[11px] border-[1.5px] border-[var(--border)] rounded-[9px] text-[13px] text-[var(--text1)] bg-white transition-colors outline-none focus:border-[var(--blue-lt)] box-border">
                                 </div>
-                                <div class="pf-field" style="grid-column:1/-1;display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+                                <div class="col-span-full grid grid-cols-2 gap-3">
                                     <div>
-                                        <label>Height (cm) <span class="req">*</span></label>
-                                        <input type="number" name="height_cm" placeholder="e.g. 165" min="100" max="250" step="0.5" required>
+                                        <label class="block text-[10.5px] font-bold text-[var(--text2)] tracking-[.04em] uppercase mb-[5px]">Height (cm) <span class="text-red-500">*</span></label>
+                                        <input type="number" name="height_cm" placeholder="e.g. 165" min="100" max="250" step="0.5" required
+                                            class="w-full py-[9px] px-[11px] border-[1.5px] border-[var(--border)] rounded-[9px] text-[13px] text-[var(--text1)] bg-white transition-colors outline-none focus:border-[var(--blue-lt)] box-border">
                                     </div>
                                     <div>
-                                        <label>Weight (kg) <span class="req">*</span></label>
-                                        <input type="number" name="weight_kg" placeholder="e.g. 60" min="30" max="300" step="0.5" required>
+                                        <label class="block text-[10.5px] font-bold text-[var(--text2)] tracking-[.04em] uppercase mb-[5px]">Weight (kg) <span class="text-red-500">*</span></label>
+                                        <input type="number" name="weight_kg" placeholder="e.g. 60" min="30" max="300" step="0.5" required
+                                            class="w-full py-[9px] px-[11px] border-[1.5px] border-[var(--border)] rounded-[9px] text-[13px] text-[var(--text1)] bg-white transition-colors outline-none focus:border-[var(--blue-lt)] box-border">
                                     </div>
                                 </div>
                             </div>
                         </div>
 
                         <!-- ── STEP 2: Education ── -->
-                        <div class="step-panel" id="stepPanel2">
-                            <p class="pf-section-heading">Educational Background</p>
-                            <p class="pf-subtitle">This information is required for evaluating your eligibility for specific job orders.</p>
-                            <div class="pf-grid">
-                                <div class="pf-field pf-full">
-                                    <label>Highest Educational Attainment <span class="req">*</span></label>
-                                    <select name="educational_attainment" id="eduSelect" required>
+                        <div class="hidden" id="stepPanel2">
+                            <p class="font-['DM_Serif_Display'] text-[15px] text-[var(--navy)] mb-3.5">Educational Background</p>
+                            <p class="text-[11.5px] text-[var(--text3)] mb-[18px] leading-relaxed">This information is required for evaluating your eligibility for specific job orders.</p>
+                            <div class="grid grid-cols-1 min-[500px]:grid-cols-2 gap-3">
+                                <div class="col-span-full">
+                                    <label class="block text-[10.5px] font-bold text-[var(--text2)] tracking-[.04em] uppercase mb-[5px]">Highest Educational Attainment <span class="text-red-500">*</span></label>
+                                    <select name="educational_attainment" id="eduSelect" required
+                                        class="w-full py-[9px] px-[11px] border-[1.5px] border-[var(--border)] rounded-[9px] text-[13px] text-[var(--text1)] bg-white transition-colors outline-none focus:border-[var(--blue-lt)] box-border">
                                         <option value="">Select…</option>
                                         <option>Elementary Graduate</option>
                                         <option>High School Graduate</option>
@@ -1237,9 +582,10 @@ $first    = explode(' ', trim($client_name))[0] ?: $client_name;
                                         <option>Post Graduate</option>
                                     </select>
                                 </div>
-                                <div class="pf-field pf-full" id="courseDegreeField" style="display:none;">
-                                    <label>Course / Degree</label>
-                                    <select name="degree_id" id="degreeSelect">
+                                <div class="col-span-full hidden" id="courseDegreeField">
+                                    <label class="block text-[10.5px] font-bold text-[var(--text2)] tracking-[.04em] uppercase mb-[5px]">Course / Degree</label>
+                                    <select name="degree_id" id="degreeSelect"
+                                        class="w-full py-[9px] px-[11px] border-[1.5px] border-[var(--border)] rounded-[9px] text-[13px] text-[var(--text1)] bg-white transition-colors outline-none focus:border-[var(--blue-lt)] box-border">
                                         <option value="">Select…</option>
                                         <?php foreach ($degreeGroups as $category => $degrees): ?>
                                             <optgroup label="<?= htmlspecialchars($category) ?>">
@@ -1254,53 +600,62 @@ $first    = explode(' ', trim($client_name))[0] ?: $client_name;
                                         <?php endforeach; ?>
                                     </select>
                                     <input type="text" name="course_degree" id="courseDegreeInput"
-                                        placeholder="Please specify your course/degree" style="display:none;margin-top:8px;">
+                                        placeholder="Please specify your course/degree"
+                                        class="hidden mt-2 w-full py-[9px] px-[11px] border-[1.5px] border-[var(--border)] rounded-[9px] text-[13px] text-[var(--text1)] bg-white transition-colors outline-none focus:border-[var(--blue-lt)] box-border">
                                 </div>
-                                <div class="pf-field pf-full">
-                                    <label>School / Institution Name</label>
-                                    <input type="text" name="school_name" placeholder="e.g. City College of Calamba">
+                                <div class="col-span-full">
+                                    <label class="block text-[10.5px] font-bold text-[var(--text2)] tracking-[.04em] uppercase mb-[5px]">School / Institution Name</label>
+                                    <input type="text" name="school_name" placeholder="e.g. City College of Calamba"
+                                        class="w-full py-[9px] px-[11px] border-[1.5px] border-[var(--border)] rounded-[9px] text-[13px] text-[var(--text1)] bg-white transition-colors outline-none focus:border-[var(--blue-lt)] box-border">
                                 </div>
-                                <div class="pf-field pf-full">
-                                    <label>School Address</label>
-                                    <input type="text" name="school_address" placeholder="e.g. Calamba City, Laguna">
+                                <div class="col-span-full">
+                                    <label class="block text-[10.5px] font-bold text-[var(--text2)] tracking-[.04em] uppercase mb-[5px]">School Address</label>
+                                    <input type="text" name="school_address" placeholder="e.g. Calamba City, Laguna"
+                                        class="w-full py-[9px] px-[11px] border-[1.5px] border-[var(--border)] rounded-[9px] text-[13px] text-[var(--text1)] bg-white transition-colors outline-none focus:border-[var(--blue-lt)] box-border">
                                 </div>
-                                <div class="pf-field">
-                                    <label>Year Graduated</label>
-                                    <input type="number" name="year_graduated" placeholder="e.g. 2022" min="1970" max="<?= date('Y') ?>">
+                                <div>
+                                    <label class="block text-[10.5px] font-bold text-[var(--text2)] tracking-[.04em] uppercase mb-[5px]">Year Graduated</label>
+                                    <input type="number" name="year_graduated" placeholder="e.g. 2022" min="1970" max="<?= date('Y') ?>"
+                                        class="w-full py-[9px] px-[11px] border-[1.5px] border-[var(--border)] rounded-[9px] text-[13px] text-[var(--text1)] bg-white transition-colors outline-none focus:border-[var(--blue-lt)] box-border">
                                 </div>
                             </div>
                         </div>
 
                         <!-- ── STEP 3: Work Experience ── -->
-                        <div class="step-panel" id="stepPanel3">
-                            <p class="pf-section-heading">Work Experience</p>
-                            <p class="pf-subtitle">If you have no prior work experience, you may leave these fields blank.</p>
-                            <div class="pf-grid">
-                                <div class="pf-field pf-full">
-                                    <label>Years of Work Experience</label>
-                                    <input type="number" name="work_experience_years" placeholder="e.g. 3" min="0" max="50">
+                        <div class="hidden" id="stepPanel3">
+                            <p class="font-['DM_Serif_Display'] text-[15px] text-[var(--navy)] mb-3.5">Work Experience</p>
+                            <p class="text-[11.5px] text-[var(--text3)] mb-[18px] leading-relaxed">If you have no prior work experience, you may leave these fields blank.</p>
+                            <div class="grid grid-cols-1 min-[500px]:grid-cols-2 gap-3">
+                                <div class="col-span-full">
+                                    <label class="block text-[10.5px] font-bold text-[var(--text2)] tracking-[.04em] uppercase mb-[5px]">Years of Work Experience</label>
+                                    <input type="number" name="work_experience_years" placeholder="e.g. 3" min="0" max="50"
+                                        class="w-full py-[9px] px-[11px] border-[1.5px] border-[var(--border)] rounded-[9px] text-[13px] text-[var(--text1)] bg-white transition-colors outline-none focus:border-[var(--blue-lt)] box-border">
                                 </div>
-                                <div class="pf-field pf-full">
-                                    <label>Last / Current Employer</label>
-                                    <input type="text" name="last_employer" placeholder="e.g. ABC Manufacturing Corp.">
+                                <div class="col-span-full">
+                                    <label class="block text-[10.5px] font-bold text-[var(--text2)] tracking-[.04em] uppercase mb-[5px]">Last / Current Employer</label>
+                                    <input type="text" name="last_employer" placeholder="e.g. ABC Manufacturing Corp."
+                                        class="w-full py-[9px] px-[11px] border-[1.5px] border-[var(--border)] rounded-[9px] text-[13px] text-[var(--text1)] bg-white transition-colors outline-none focus:border-[var(--blue-lt)] box-border">
                                 </div>
-                                <div class="pf-field pf-full">
-                                    <label>Last / Current Position</label>
-                                    <input type="text" name="last_position" placeholder="e.g. Production Operator">
+                                <div class="col-span-full">
+                                    <label class="block text-[10.5px] font-bold text-[var(--text2)] tracking-[.04em] uppercase mb-[5px]">Last / Current Position</label>
+                                    <input type="text" name="last_position" placeholder="e.g. Production Operator"
+                                        class="w-full py-[9px] px-[11px] border-[1.5px] border-[var(--border)] rounded-[9px] text-[13px] text-[var(--text1)] bg-white transition-colors outline-none focus:border-[var(--blue-lt)] box-border">
                                 </div>
                             </div>
                         </div>
 
-                    </form><!-- /profileForm -->
+                    </form><!-- profileForm -->
 
-                    <div id="profileError" style="display:none;background:#fee2e2;border:1px solid #fecaca;border-radius:9px;padding:10px 13px;margin-top:12px;font-size:12px;font-weight:600;color:#991b1b;"></div>
+                    <div id="profileError" class="hidden bg-red-100 border border-red-200 rounded-[9px] py-[10px] px-[13px] mt-3 text-xs font-semibold text-red-800"></div>
 
                 </div><!-- /modal-body -->
-                <div class="modal-footer" id="profileModalFooter">
-                    <button class="modal-btn modal-btn-secondary" id="profileBackBtn" style="display:none;" onclick="profileStep(-1)">
+                <div class="flex justify-end gap-2 py-[14px] px-[18px] border-t border-[var(--border)] bg-[var(--surface)] rounded-b-[18px]" id="profileModalFooter">
+                    <button id="profileBackBtn" style="display:none;" onclick="profileStep(-1)"
+                        class="py-[9px] px-5 rounded-[10px] text-[12.5px] font-bold cursor-pointer border-none transition-opacity hover:opacity-[.88] bg-[var(--surface)] border border-[var(--border)] text-[var(--text2)]">
                         <i class="fas fa-arrow-left"></i> Back
                     </button>
-                    <button class="modal-btn modal-btn-primary" id="profileNextBtn" onclick="profileStep(1)">
+                    <button id="profileNextBtn" onclick="profileStep(1)"
+                        class="py-[9px] px-5 rounded-[10px] text-[12.5px] font-bold cursor-pointer border-none transition-opacity hover:opacity-[.88] bg-[var(--blue)] text-white">
                         Next &nbsp;<i class="fas fa-arrow-right"></i>
                     </button>
                 </div>
@@ -1312,12 +667,19 @@ $first    = explode(' ', trim($client_name))[0] ?: $client_name;
                 const TOTAL_STEPS = 3;
                 let currentStep = 1;
 
+                const STEP_NODE_BASE = 'w-7 h-7 rounded-full flex items-center justify-center text-[11px] font-extrabold flex-shrink-0 transition-colors';
+                const STEP_NODE_DONE = STEP_NODE_BASE + ' bg-[var(--blue)] text-white';
+                const STEP_NODE_ACTIVE = STEP_NODE_BASE + ' bg-[var(--navy)] text-white';
+                const STEP_NODE_IDLE = STEP_NODE_BASE + ' bg-[var(--border)] text-[var(--text3)]';
+                const STEP_LINE_BASE = 'flex-1 h-0.5 bg-[var(--border)] transition-colors';
+                const STEP_LINE_DONE = 'flex-1 h-0.5 bg-[var(--blue)] transition-colors';
+
                 // Edu field toggle
                 document.getElementById('eduSelect').addEventListener('change', function() {
                     const showCourse = ['College Undergraduate', 'College Graduate', 'Post Graduate',
                         'Vocational/Technical', 'Senior High School Graduate'
                     ].includes(this.value);
-                    document.getElementById('courseDegreeField').style.display = showCourse ? 'block' : 'none';
+                    document.getElementById('courseDegreeField').classList.toggle('hidden', !showCourse);
                 });
 
                 // Degree picker: auto-fill course_degree from the selected degree name,
@@ -1326,30 +688,30 @@ $first    = explode(' ', trim($client_name))[0] ?: $client_name;
                     const opt = this.options[this.selectedIndex];
                     const input = document.getElementById('courseDegreeInput');
                     if (!this.value) {
-                        input.style.display = 'none';
+                        input.classList.add('hidden');
                         input.value = '';
                         return;
                     }
                     if (opt.dataset.others === '1') {
-                        input.style.display = 'block';
+                        input.classList.remove('hidden');
                         input.value = '';
                         input.placeholder = 'Please specify your course/degree';
                         input.focus();
                     } else {
-                        input.style.display = 'none';
+                        input.classList.add('hidden');
                         input.value = opt.dataset.name || '';
                     }
                 });
 
                 function updateStepUI() {
                     for (let i = 1; i <= TOTAL_STEPS; i++) {
-                        document.getElementById('stepPanel' + i).classList.toggle('active', i === currentStep);
+                        document.getElementById('stepPanel' + i).classList.toggle('hidden', i !== currentStep);
                         const node = document.getElementById('sn' + i);
-                        if (i < currentStep) node.className = 'step-node done';
-                        else if (i === currentStep) node.className = 'step-node active';
-                        else node.className = 'step-node idle';
+                        if (i < currentStep) node.className = STEP_NODE_DONE;
+                        else if (i === currentStep) node.className = STEP_NODE_ACTIVE;
+                        else node.className = STEP_NODE_IDLE;
                         if (i < TOTAL_STEPS) {
-                            document.getElementById('sl' + i).className = 'step-line' + (i < currentStep ? ' done' : '');
+                            document.getElementById('sl' + i).className = i < currentStep ? STEP_LINE_DONE : STEP_LINE_BASE;
                         }
                     }
                     document.getElementById('profileBackBtn').style.display = currentStep > 1 ? '' : 'none';
@@ -1378,11 +740,11 @@ $first    = explode(' ', trim($client_name))[0] ?: $client_name;
                 function showError(msg) {
                     const el = document.getElementById('profileError');
                     el.textContent = msg;
-                    el.style.display = 'block';
+                    el.classList.remove('hidden');
                 }
 
                 function hideError() {
-                    document.getElementById('profileError').style.display = 'none';
+                    document.getElementById('profileError').classList.add('hidden');
                 }
 
                 window.profileStep = function(dir) {
@@ -1469,16 +831,16 @@ $first    = explode(' ', trim($client_name))[0] ?: $client_name;
     <?php if ($show_profile_modal): ?>
         <script>
             document.addEventListener('DOMContentLoaded', function() {
-                const main = document.querySelector('.main');
+                const main = document.getElementById('mainContent');
                 if (!main) return;
                 const banner = document.createElement('div');
-                banner.className = 'profile-lock-banner fade-in';
+                banner.className = 'opacity-0 translate-y-2.5 [animation:fi2_0.4s_ease_forwards] bg-[#fff7ed] border-[1.5px] border-[#fed7aa] rounded-xl py-3.5 px-4 mb-3 flex items-start gap-3';
                 banner.innerHTML = `
-            <i class="fas fa-lock"></i>
+            <i class="fas fa-lock text-[#f97316] text-lg mt-0.5"></i>
             <div>
-                <h4>Complete Your Profile to Unlock the Dashboard</h4>
-                <p>You must fill in your applicant profile before you can browse jobs or submit applications. This ensures accurate matching with available job orders.</p>
-                <button onclick="document.getElementById('profileModal').style.display='flex'">
+                <h4 class="text-[12.5px] font-extrabold text-[#9a3412]">Complete Your Profile to Unlock the Dashboard</h4>
+                <p class="text-[11.5px] text-[#c2410c] mt-[3px] leading-relaxed">You must fill in your applicant profile before you can browse jobs or submit applications. This ensures accurate matching with available job orders.</p>
+                <button class="mt-2.5 bg-[var(--navy)] text-white border-none py-2 px-4 rounded-[9px] text-xs font-bold cursor-pointer" onclick="document.getElementById('profileModal').style.display='flex'">
                     <i class="fas fa-id-card"></i> &nbsp; Complete My Profile
                 </button>
             </div>
@@ -1489,6 +851,12 @@ $first    = explode(' ', trim($client_name))[0] ?: $client_name;
     <?php endif; ?>
 
     <script type="module" src="../js/main.js"></script>
+    <?php
+    if (!$profile_complete) {
+        $login_toast_title = 'Welcome, ' . htmlspecialchars($first, ENT_QUOTES) . '!';
+    }
+    include '../includes/login_toast.php';
+    ?>
 </body>
 
 </html>

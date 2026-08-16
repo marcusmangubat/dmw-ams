@@ -1,4 +1,5 @@
 <?php
+
 /**
  * analytics-api.php
  * DMW RO IV-A – Admin Analytics Backend
@@ -32,16 +33,36 @@ $action = $_GET['action'] ?? '';
 
 try {
     switch ($action) {
-        case 'summary':      echo json_encode(getSummary($database));     break;
-        case 'stages':       echo json_encode(getStages($database));      break;
-        case 'avg_time':     echo json_encode(getAvgTime($database));     break;
-        case 'overdue':      echo json_encode(getOverdue($database));     break;
-        case 'weekly':       echo json_encode(getWeekly($database));      break;
-        case 'services':     echo json_encode(getServices($database));    break;
-        case 'svc_monthly':  echo json_encode(getSvcMonthly($database));  break;
-        case 'destinations': echo json_encode(getDestinations($database));break;
-        case 'evaluators':   echo json_encode(getEvaluators($database));  break;
-        case 'job_orders':   echo json_encode(getJobOrders($database));   break;
+        case 'summary':
+            echo json_encode(getSummary($database));
+            break;
+        case 'stages':
+            echo json_encode(getStages($database));
+            break;
+        case 'avg_time':
+            echo json_encode(getAvgTime($database));
+            break;
+        case 'overdue':
+            echo json_encode(getOverdue($database));
+            break;
+        case 'weekly':
+            echo json_encode(getWeekly($database));
+            break;
+        case 'services':
+            echo json_encode(getServices($database));
+            break;
+        case 'svc_monthly':
+            echo json_encode(getSvcMonthly($database));
+            break;
+        case 'destinations':
+            echo json_encode(getDestinations($database));
+            break;
+        case 'evaluators':
+            echo json_encode(getEvaluators($database));
+            break;
+        case 'job_orders':
+            echo json_encode(getJobOrders($database));
+            break;
         default:
             http_response_code(400);
             echo json_encode(['error' => 'Unknown action']);
@@ -335,7 +356,7 @@ function getSvcMonthly(mysqli $db): array
     }
 
     return [
-        'labels' => ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'],
+        'labels' => ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'],
         'gov'    => array_values($gov),
         'priv'   => array_values($priv),
     ];
@@ -356,7 +377,7 @@ function getDestinations(mysqli $db): array
 
     $labels  = [];
     $data    = [];
-    $palette = ['#1d4ed8','#059669','#d97706','#6366f1','#dc2626','#94a3b8'];
+    $palette = ['#1d4ed8', '#059669', '#d97706', '#6366f1', '#dc2626', '#94a3b8'];
 
     while ($r = $res->fetch_assoc()) {
         $labels[] = $r['country'];
@@ -379,7 +400,7 @@ function getDestinations(mysqli $db): array
 ═══════════════════════════════════════════════════════════════ */
 function getEvaluators(mysqli $db): array
 {
-    $wlColors = ['#059669','#d97706','#3b82f6','#6366f1','#dc2626','#94a3b8'];
+    $wlColors = ['#059669', '#d97706', '#3b82f6', '#6366f1', '#dc2626', '#94a3b8'];
 
     // Total evaluated (final decision) per evaluator
     $res = $db->query(
@@ -401,8 +422,10 @@ function getEvaluators(mysqli $db): array
         $h = (int)$r['handled'];
         if ($h > $maxH) $maxH = $h;
 
-        $initials = implode('', array_map(fn($p) => strtoupper($p[0] ?? ''),
-            array_filter(explode(' ', $r['full_name']))));
+        $initials = implode('', array_map(
+            fn($p) => strtoupper($p[0] ?? ''),
+            array_filter(explode(' ', $r['full_name']))
+        ));
         $initials = substr($initials, 0, 2);
 
         $color   = $wlColors[$idx % count($wlColors)];
@@ -427,7 +450,7 @@ function getEvaluators(mysqli $db): array
         'staff'          => $rows,
         'workload_names' => $wlNames,
         'workload_data'  => $wlData,
-        'workload_colors'=> array_slice($wlColors, 0, count($wlNames)),
+        'workload_colors' => array_slice($wlColors, 0, count($wlNames)),
     ];
 }
 

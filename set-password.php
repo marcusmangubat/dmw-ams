@@ -3,7 +3,7 @@
 // Activated when user clicks invitation link → sets password and creates profile
 
 session_start();
-include 'db.php';  
+include 'db.php';
 date_default_timezone_set('Asia/Manila');
 
 $token = $_GET['token'] ?? '';

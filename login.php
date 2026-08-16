@@ -41,6 +41,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                 $_SESSION['user_email'] = $user['email'];
                 $_SESSION['user_type']  = $user['usertype'];
+                $_SESSION['login_success'] = true;
 
                 $stmt_name = $database->prepare("
                     SELECT CONCAT(first_name, ' ', last_name) AS full_name 

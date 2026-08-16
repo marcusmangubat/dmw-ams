@@ -301,6 +301,14 @@ $kpi_defs = [
     <link rel="stylesheet" href="../css/dashboard.css">
     <link rel="icon" type="image/png" href="https://dmw.gov.ph/images/dmw_tahanan_ng_ofw_colored.png">
     <style>
+        body {
+            font-family: 'DM Sans', sans-serif;
+        }
+
+        .font-display {
+            font-family: 'DM Serif Display', serif;
+        }
+
         .topbar-brand img {
             width: 42px;
             height: auto;
@@ -316,10 +324,44 @@ $kpi_defs = [
         .kpi-card:hover {
             transform: translateY(-2px);
         }
+
+        /* Fade-in-up entrance, staggered per tile/row via inline delay */
+        @keyframes fadeInUp {
+            from {
+                opacity: 0;
+                transform: translateY(10px);
+            }
+
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .fade-in {
+            opacity: 0;
+            animation: fadeInUp .4s ease forwards;
+        }
+
+        /* Hide scrollbar on the horizontally-scrolling table wrapper while
+           keeping it scrollable (mirrors the evaluator portal pattern) */
+        .no-scrollbar::-webkit-scrollbar {
+            display: none;
+        }
+
+        .no-scrollbar {
+            -ms-overflow-style: none;
+            scrollbar-width: none;
+        }
+
+        /* Visual cue for stale/locked rows */
+        .row-stale {
+            background: linear-gradient(90deg, rgba(217, 119, 6, .04), transparent 40%);
+        }
     </style>
 </head>
 
-<body>
+<body class="bg-[var(--bg,#f4f6fb)]">
 
     <!-- TOP BAR -->
     <header class="topbar">
@@ -360,41 +402,40 @@ $kpi_defs = [
 
         <!-- KPI FILTER CARDS -->
         <div class="flex justify-center mb-8">
-            <div class="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-4 max-w-7xl w-full px-4">
-                <?php foreach ($kpi_defs as $kpi):
+            <div class="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-3 max-w-7xl w-full px-4">
+                <?php foreach ($kpi_defs as $i => $kpi):
                     $is_active = ($kpi['key'] === '' && $status_filter === '')
                         || ($kpi['key'] !== '' && $status_filter === $kpi['key'])
                         || ($kpi['key'] === 'unassign' && in_array($status_filter, ['unassign', 'unassigned'], true));
+                    $delay = .05 + ($i * .03);
                 ?>
                     <a href="applications.php<?= $kpi['key'] ? '?status=' . urlencode($kpi['key']) : '' ?>"
-                        class="kpi-card rounded-2xl border p-5 flex flex-col gap-3 transition-all hover:shadow-md"
-                        style="background:<?= $is_active ? $kpi['color'] . '15' : '#fff' ?>;
-                       border-color:<?= $is_active ? $kpi['color'] : 'var(--border)' ?>;">
-                        <div class="w-9 h-9 rounded-xl flex items-center justify-center"
-                            style="background:<?= $kpi['color'] ?>22;">
-                            <i class="fas <?= $kpi['icon'] ?>" style="color:<?= $kpi['color'] ?>"></i>
-                        </div>
-                        <div>
-                            <div class="text-2xl font-bold" style="color:var(--navy);"><?= $kpi['count'] ?></div>
-                            <div class="text-xs font-semibold uppercase tracking-wide text-[var(--text3)]"><?= $kpi['label'] ?></div>
-                        </div>
+                        class="kpi-card fade-in group relative overflow-hidden rounded-2xl <?= $is_active ? 'border-2 ring-1' : 'border' ?> bg-white p-4 flex flex-col justify-between gap-2 no-underline transition hover:-translate-y-0.5 hover:shadow-lg"
+                        style="animation-delay:<?= $delay ?>s;
+                       border-color:<?= $is_active ? $kpi['color'] : 'var(--border)' ?>;<?= $is_active ? '--tw-ring-color:' . $kpi['color'] . ';' : '' ?>">
+                        <span class="flex items-center gap-1.5 text-xs font-bold uppercase tracking-widest text-gray-500">
+                            <i class="fas <?= $kpi['icon'] ?>" style="color:<?= $kpi['color'] ?>"></i> <?= $kpi['label'] ?>
+                        </span>
+                        <span class="text-3xl font-extrabold text-gray-900"><?= $kpi['count'] ?></span>
                     </a>
                 <?php endforeach; ?>
             </div>
         </div>
         <?php if ($error): ?>
-            <div class="bg-red-50 border border-red-200 text-red-700 px-5 py-4 rounded-2xl mb-6 text-sm">
+            <div class="fade-in flex items-center gap-2.5 bg-red-50 border border-red-200 text-red-700 px-5 py-4 rounded-2xl mb-6 text-sm">
+                <i class="fas fa-circle-exclamation text-red-500"></i>
                 <?= htmlspecialchars($error) ?>
             </div>
         <?php endif; ?>
 
         <?php if ($success && strpos($success, 'reopened') === false): ?>
-            <div class="bg-green-50 border border-green-200 text-green-700 px-5 py-4 rounded-2xl mb-6 text-sm">
+            <div class="fade-in flex items-center gap-2.5 bg-green-50 border border-green-200 text-green-700 px-5 py-4 rounded-2xl mb-6 text-sm">
+                <i class="fas fa-circle-check text-green-500"></i>
                 <?= htmlspecialchars($success) ?>
             </div>
         <?php endif; ?>
 
-        <div class="card">
+        <div class="card fade-in rounded-2xl border border-[var(--border)] bg-[var(--card)] overflow-hidden" style="animation-delay:.1s">
             <div class="card-head">
                 <div class="card-title">
                     <span class="ctdot" style="background:var(--indigo)"></span>
@@ -402,38 +443,58 @@ $kpi_defs = [
                 </div>
             </div>
 
-            <div class="overflow-x-auto">
+            <div class="overflow-x-auto no-scrollbar">
                 <table class="w-full min-w-[1150px]">
                     <thead>
-                        <tr class="border-b border-[var(--border)]">
+                        <tr class="bg-[var(--surface)] border-b border-[var(--border)]">
                             <!--<th class="px-6 py-5 text-left text-xs font-bold uppercase tracking-widest text-[var(--text3)]">ID</th>-->
-                            <th class="px-6 py-5 text-left text-xs font-bold uppercase tracking-widest text-[var(--text3)]">Applicant</th>
-                            <th class="px-6 py-5 text-left text-xs font-bold uppercase tracking-widest text-[var(--text3)]">Position / RSF</th>
-                            <th class="px-6 py-5 text-center text-xs font-bold uppercase tracking-widest text-[var(--text3)]">Status</th>
-                            <th class="px-6 py-5 text-left text-xs font-bold uppercase tracking-widest text-[var(--text3)]">Handling</th>
-                            <th class="px-6 py-5 text-left text-xs font-bold uppercase tracking-widest text-[var(--text3)]">Submitted / Updated</th>
-                            <th class="px-6 py-5 text-center text-xs font-bold uppercase tracking-widest text-[var(--text3)]">Action</th>
+                            <th class="px-6 py-4 text-left text-[10.5px] font-bold uppercase tracking-wide text-[var(--text3)]">Applicant</th>
+                            <th class="px-6 py-4 text-left text-[10.5px] font-bold uppercase tracking-wide text-[var(--text3)]">Position / RSF</th>
+                            <th class="px-6 py-4 text-center text-[10.5px] font-bold uppercase tracking-wide text-[var(--text3)]">Status</th>
+                            <th class="px-6 py-4 text-left text-[10.5px] font-bold uppercase tracking-wide text-[var(--text3)]">Handling</th>
+                            <th class="px-6 py-4 text-left text-[10.5px] font-bold uppercase tracking-wide text-[var(--text3)]">Submitted / Updated</th>
+                            <th class="px-6 py-4 text-center text-[10.5px] font-bold uppercase tracking-wide text-[var(--text3)]">Action</th>
                         </tr>
                     </thead>
                     <tbody class="divide-y divide-[var(--border)] text-sm">
                         <?php if (empty($applications)): ?>
                             <tr>
                                 <td colspan="6" class="px-8 py-16 text-center text-[var(--text3)]">
-                                    No applications found.
+                                    <i class="fas fa-inbox text-4xl text-[var(--border)] block mb-3"></i>
+                                    <span class="text-sm font-bold text-[var(--text2)] block">No applications found</span>
+                                    <span class="text-xs">Try a different filter above.</span>
                                 </td>
                             </tr>
                         <?php else: ?>
-                            <?php foreach ($applications as $app): ?>
+                            <?php foreach ($applications as $i => $app): ?>
                                 <?php
                                 $statusClass = 'bg-gray-100 text-gray-700';
-                                if ($app['status'] === 'approved') $statusClass = 'bg-emerald-100 text-emerald-700';
-                                elseif (in_array($app['status'], ['under_evaluation', 'assign', 'assigned'])) $statusClass = 'bg-indigo-100 text-indigo-700';
-                                elseif ($app['status'] === 'for_compliance') $statusClass = 'bg-orange-100 text-orange-700';
-                                elseif ($app['status'] === 'disapproved') $statusClass = 'bg-red-100 text-red-700';
-                                elseif (in_array($app['status'], ['unassign', 'unassigned', 'resubmitted'])) $statusClass = 'bg-amber-100 text-amber-700';
-                                elseif ($app['status'] === 'pending') $statusClass = 'bg-blue-100 text-blue-700';
+                                $statusIcon  = 'fa-circle';
+                                if ($app['status'] === 'approved') {
+                                    $statusClass = 'bg-emerald-100 text-emerald-700';
+                                    $statusIcon  = 'fa-check-circle';
+                                } elseif (in_array($app['status'], ['under_evaluation', 'assign', 'assigned'])) {
+                                    $statusClass = 'bg-indigo-100 text-indigo-700';
+                                    $statusIcon  = $app['status'] === 'under_evaluation' ? 'fa-search' : 'fa-user-check';
+                                } elseif ($app['status'] === 'for_compliance') {
+                                    $statusClass = 'bg-orange-100 text-orange-700';
+                                    $statusIcon  = 'fa-triangle-exclamation';
+                                } elseif ($app['status'] === 'disapproved') {
+                                    $statusClass = 'bg-red-100 text-red-700';
+                                    $statusIcon  = 'fa-times-circle';
+                                } elseif (in_array($app['status'], ['unassign', 'unassigned', 'resubmitted'])) {
+                                    $statusClass = 'bg-amber-100 text-amber-700';
+                                    $statusIcon  = 'fa-rotate-right';
+                                } elseif ($app['status'] === 'pending') {
+                                    $statusClass = 'bg-blue-100 text-blue-700';
+                                    $statusIcon  = 'fa-clock';
+                                }
+                                $rowDelay = .05 + (min($i, 8) * .02);
+                                $isStale  = !empty($app['locked_at'])
+                                    && in_array($app['status'], ['under_evaluation', 'for_compliance'], true)
+                                    && ((time() - strtotime($app['locked_at'])) / 3600) > 48;
                                 ?>
-                                <tr class="hover:bg-[var(--surface)] transition-colors">
+                                <tr class="fade-in hover:bg-[var(--surface)] transition-colors <?= $isStale ? 'row-stale' : '' ?>" style="animation-delay:<?= $rowDelay ?>s">
                                     <!--<td class="px-6 py-5 font-semibold text-[var(--navy)]">#<?= $app['id'] ?></td>-->
                                     <td class="px-6 py-5">
                                         <div class="font-medium">
@@ -451,9 +512,9 @@ $kpi_defs = [
                                         </div>
                                     </td>
                                     <td class="px-6 py-5 text-center">
-                                        <span class="inline-block px-4 py-1.5 rounded-xl text-xs font-semibold <?= $statusClass ?>"
+                                        <span class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[10.5px] font-bold uppercase tracking-wide <?= $statusClass ?>"
                                             <?php if (!empty($app['notes'])): ?>title="<?= htmlspecialchars($app['notes'], ENT_QUOTES) ?>" <?php endif; ?>>
-                                            <?= htmlspecialchars(str_replace('_', ' ', ucfirst($app['status']))) ?>
+                                            <i class="fas <?= $statusIcon ?> text-[9px]"></i><?= htmlspecialchars(str_replace('_', ' ', ucfirst($app['status']))) ?>
                                         </span>
                                     </td>
                                     <td class="px-6 py-5 text-xs">
@@ -495,7 +556,7 @@ $kpi_defs = [
                                                     <?php endforeach; ?>
                                                 </select>
                                                 <button type="submit"
-                                                    class="bg-[var(--blue)] hover:bg-[#1e40af] text-white px-5 py-2 rounded-xl text-sm font-semibold transition">
+                                                    class="bg-[var(--blue)] hover:bg-[#1e40af] hover:-translate-y-0.5 text-white px-5 py-2 rounded-xl text-sm font-semibold transition">
                                                     Assign
                                                 </button>
                                             </form>
@@ -515,14 +576,14 @@ $kpi_defs = [
                                                                 data-app-id="<?= (int) $app['id'] ?>"
                                                                 data-evaluator-name="<?= htmlspecialchars($app['current_evaluator_name'] ?? 'the evaluator', ENT_QUOTES) ?>"
                                                                 onclick="confirmReopen(this)"
-                                                                class="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-xl text-xs font-semibold transition">
+                                                                class="bg-emerald-600 hover:bg-emerald-700 hover:-translate-y-0.5 text-white px-4 py-2 rounded-xl text-xs font-semibold transition">
                                                                 <i class="fas fa-rotate-left"></i> Reopen
                                                             </button>
                                                         </form>
                                                     <?php endif; ?>
 
                                                     <a href="view-application.php?id=<?= (int) $app['id'] ?>"
-                                                        class="bg-[var(--navy)] hover:bg-[#0b1f4b] text-white px-4 py-2 rounded-xl text-xs font-semibold transition inline-block">
+                                                        class="bg-[var(--navy)] hover:bg-[#0b1f4b] hover:-translate-y-0.5 text-white px-4 py-2 rounded-xl text-xs font-semibold transition inline-block">
                                                         <i class="fas fa-gavel"></i> Evaluate Directly
                                                     </a>
 

@@ -1147,3 +1147,204 @@ COMMIT;
 /*!40101 SET CHARACTER_SET_CLIENT=@OLD_CHARACTER_SET_CLIENT */;
 /*!40101 SET CHARACTER_SET_RESULTS=@OLD_CHARACTER_SET_RESULTS */;
 /*!40101 SET COLLATION_CONNECTION=@OLD_COLLATION_CONNECTION */;
+
+
+
+
+-- =========================================================
+-- Add Skills feature for job matching
+-- Database: `potek`
+-- Run this AFTER your existing uppdatedddd15.sql import
+-- =========================================================
+
+SET SQL_MODE = "NO_AUTO_VALUE_ON_ZERO";
+START TRANSACTION;
+SET time_zone = "+00:00";
+
+-- ---------------------------------------------------------
+-- Table structure for table `skills`
+-- Master list of skills (technical, soft, language, certification)
+-- ---------------------------------------------------------
+
+CREATE TABLE `skills` (
+  `id` int(11) NOT NULL,
+  `skill_name` varchar(150) NOT NULL,
+  `skill_category` varchar(100) DEFAULT NULL,
+  `created_at` timestamp NOT NULL DEFAULT current_timestamp()
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+--
+-- Dumping data for table `skills`
+--
+
+INSERT INTO `skills` (`id`, `skill_name`, `skill_category`) VALUES
+-- Construction and skilled trades
+(1, 'Arc Welding', 'Construction and skilled trades'),
+(2, 'TIG/MIG Welding', 'Construction and skilled trades'),
+(3, 'Scaffolding Erection', 'Construction and skilled trades'),
+(4, 'Plumbing Installation', 'Construction and skilled trades'),
+(5, 'Masonry', 'Construction and skilled trades'),
+(6, 'Carpentry', 'Construction and skilled trades'),
+(7, 'Blueprint Reading', 'Construction and skilled trades'),
+(8, 'Heavy Equipment Operation', 'Construction and skilled trades'),
+-- Caregiving and healthcare support
+(9, 'Elderly Care', 'Caregiving and healthcare support'),
+(10, 'Patient Monitoring', 'Caregiving and healthcare support'),
+(11, 'First Aid / CPR', 'Caregiving and healthcare support'),
+(12, 'Nursing Aide Support', 'Caregiving and healthcare support'),
+(13, 'Medication Assistance', 'Caregiving and healthcare support'),
+-- Domestic work and housekeeping
+(14, 'General Housekeeping', 'Domestic work and housekeeping'),
+(15, 'Childcare / Nanny Services', 'Domestic work and housekeeping'),
+(16, 'Laundry and Ironing', 'Domestic work and housekeeping'),
+(17, 'Cooking / Meal Preparation', 'Domestic work and housekeeping'),
+-- Agriculture and livestock
+(18, 'Crop Cultivation', 'Agriculture and livestock'),
+(19, 'Livestock Handling', 'Agriculture and livestock'),
+(20, 'Farm Machinery Operation', 'Agriculture and livestock'),
+(21, 'Irrigation Management', 'Agriculture and livestock'),
+-- Manufacturing and production
+(22, 'Machine Operation', 'Manufacturing and production'),
+(23, 'Quality Control Inspection', 'Manufacturing and production'),
+(24, 'Assembly Line Work', 'Manufacturing and production'),
+(25, 'Industrial Packaging', 'Manufacturing and production'),
+(26, 'Metal Fabrication', 'Manufacturing and production'),
+-- Food processing
+(27, 'Food Handling and Safety', 'Food processing'),
+(28, 'Meat/Fish Processing', 'Food processing'),
+(29, 'Baking', 'Food processing'),
+(30, 'HACCP Compliance', 'Food processing'),
+-- Transportation and driving
+(31, 'Professional Driving (Light Vehicle)', 'Transportation and driving'),
+(32, 'Professional Driving (Heavy Truck)', 'Transportation and driving'),
+(33, 'Defensive Driving', 'Transportation and driving'),
+(34, 'Route Navigation', 'Transportation and driving'),
+-- Logistics and warehouse
+(35, 'Inventory Management', 'Logistics and warehouse'),
+(36, 'Forklift Operation', 'Logistics and warehouse'),
+(37, 'Order Picking and Packing', 'Logistics and warehouse'),
+(38, 'Warehouse Management Systems', 'Logistics and warehouse'),
+-- Maintenance and repair
+(39, 'Electrical Troubleshooting', 'Maintenance and repair'),
+(40, 'HVAC Repair', 'Maintenance and repair'),
+(41, 'Mechanical Repair', 'Maintenance and repair'),
+(42, 'Preventive Maintenance', 'Maintenance and repair'),
+-- Engineering and technical
+(43, 'CAD/CAM Software', 'Engineering and technical'),
+(44, 'Electrical Systems Design', 'Engineering and technical'),
+(45, 'Project Management', 'Engineering and technical'),
+(46, 'Technical Documentation', 'Engineering and technical'),
+(47, 'CNC Machining', 'Engineering and technical'),
+-- Hospitality and service
+(48, 'Food and Beverage Service', 'Hospitality and service'),
+(49, 'Culinary Arts / Cooking', 'Hospitality and service'),
+(50, 'Front Desk / Guest Relations', 'Hospitality and service'),
+(51, 'Barista Skills', 'Hospitality and service'),
+-- Administration and clerical
+(52, 'Data Encoding', 'Administration and clerical'),
+(53, 'MS Office Proficiency', 'Administration and clerical'),
+(54, 'Bookkeeping', 'Administration and clerical'),
+(55, 'Records Management', 'Administration and clerical'),
+(56, 'Customer Service', 'Administration and clerical'),
+-- Security and safety
+(57, 'Security Guarding', 'Security and safety'),
+(58, 'CCTV Monitoring', 'Security and safety'),
+(59, 'Crowd Control', 'Security and safety'),
+(60, 'Occupational Health and Safety', 'Security and safety'),
+-- Aviation and airport support
+(61, 'Baggage Handling', 'Aviation and airport support'),
+(62, 'Ramp Operations', 'Aviation and airport support'),
+(63, 'Ground Equipment Operation', 'Aviation and airport support'),
+-- Marine and offshore
+(64, 'Deck Operations', 'Marine and offshore'),
+(65, 'Marine Engine Maintenance', 'Marine and offshore'),
+(66, 'Shipbuilding / Fabrication', 'Marine and offshore'),
+(67, 'Rigging', 'Marine and offshore'),
+-- Language / soft skills / certifications (cross-category)
+(68, 'English Communication', 'Language'),
+(69, 'Mandarin Communication', 'Language'),
+(70, 'Japanese Communication (JLPT)', 'Language'),
+(71, 'Korean Communication', 'Language'),
+(72, 'Teamwork', 'Soft Skills'),
+(73, 'Time Management', 'Soft Skills'),
+(74, 'Problem Solving', 'Soft Skills'),
+(75, 'Leadership', 'Soft Skills'),
+(76, 'TESDA NC II Certification', 'Certification'),
+(77, 'Professional Driver''s License', 'Certification'),
+(78, 'Amosup / Seafarer''s Certification', 'Certification');
+
+-- ---------------------------------------------------------
+-- Table structure for table `client_skills`
+-- Skills self-reported / verified for a client (job seeker)
+-- ---------------------------------------------------------
+
+CREATE TABLE `client_skills` (
+  `id` int(11) NOT NULL,
+  `client_id` int(11) NOT NULL,
+  `skill_id` int(11) NOT NULL,
+  `proficiency_level` enum('Beginner','Intermediate','Advanced','Expert') DEFAULT 'Intermediate',
+  `years_experience` int(11) DEFAULT NULL,
+  `is_verified` tinyint(1) DEFAULT 0,
+  `created_at` timestamp NOT NULL DEFAULT current_timestamp()
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- ---------------------------------------------------------
+-- Table structure for table `rsf_required_skills`
+-- Skills required/preferred for a job order (rsf_job_orders)
+-- ---------------------------------------------------------
+
+CREATE TABLE `rsf_required_skills` (
+  `id` int(11) NOT NULL,
+  `rsf_id` int(11) NOT NULL,
+  `skill_id` int(11) NOT NULL,
+  `importance` enum('Required','Preferred') DEFAULT 'Required',
+  `min_proficiency` enum('Beginner','Intermediate','Advanced','Expert') DEFAULT 'Beginner'
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- ---------------------------------------------------------
+-- Indexes
+-- ---------------------------------------------------------
+
+ALTER TABLE `skills`
+  ADD PRIMARY KEY (`id`),
+  ADD UNIQUE KEY `skill_name` (`skill_name`),
+  ADD KEY `skill_category` (`skill_category`);
+
+ALTER TABLE `client_skills`
+  ADD PRIMARY KEY (`id`),
+  ADD UNIQUE KEY `unique_client_skill` (`client_id`,`skill_id`),
+  ADD KEY `client_id` (`client_id`),
+  ADD KEY `skill_id` (`skill_id`);
+
+ALTER TABLE `rsf_required_skills`
+  ADD PRIMARY KEY (`id`),
+  ADD UNIQUE KEY `unique_rsf_skill` (`rsf_id`,`skill_id`),
+  ADD KEY `rsf_id` (`rsf_id`),
+  ADD KEY `skill_id` (`skill_id`);
+
+-- ---------------------------------------------------------
+-- AUTO_INCREMENT
+-- ---------------------------------------------------------
+
+ALTER TABLE `skills`
+  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=79;
+
+ALTER TABLE `client_skills`
+  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=1;
+
+ALTER TABLE `rsf_required_skills`
+  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=1;
+
+-- ---------------------------------------------------------
+-- Foreign key constraints
+-- ---------------------------------------------------------
+
+ALTER TABLE `client_skills`
+  ADD CONSTRAINT `client_skills_ibfk_1` FOREIGN KEY (`client_id`) REFERENCES `clients` (`cid`) ON DELETE CASCADE,
+  ADD CONSTRAINT `client_skills_ibfk_2` FOREIGN KEY (`skill_id`) REFERENCES `skills` (`id`) ON DELETE CASCADE;
+
+ALTER TABLE `rsf_required_skills`
+  ADD CONSTRAINT `rsf_required_skills_ibfk_1` FOREIGN KEY (`rsf_id`) REFERENCES `rsf_job_orders` (`id`) ON DELETE CASCADE,
+  ADD CONSTRAINT `rsf_required_skills_ibfk_2` FOREIGN KEY (`skill_id`) REFERENCES `skills` (`id`) ON DELETE CASCADE;
+
+COMMIT;

@@ -26,7 +26,6 @@ $client_id = (int) $client['cid'];
 $classification  = trim($_POST['preferred_classification'] ?? '');
 $employmentType  = trim($_POST['preferred_employment_type'] ?? '');
 $minSalaryRaw    = $_POST['min_salary_expected'] ?? '';
-$currency        = trim($_POST['salary_currency'] ?? 'PHP');
 $relocateRaw     = $_POST['willing_to_relocate'] ?? '';
 $countriesInput  = $_POST['countries'] ?? [];
 $positionsInput  = $_POST['positions'] ?? [];
@@ -97,20 +96,20 @@ try {
     if ($existing) {
         $stmt = $database->prepare("
             UPDATE client_preferences
-            SET preferred_classification = ?, min_salary_expected = ?, salary_currency = ?,
+            SET preferred_classification = ?, min_salary_expected = ?,
                 preferred_employment_type = ?, willing_to_relocate = ?
             WHERE client_id = ?
         ");
-        $stmt->bind_param("sdssii", $classification, $minSalary, $currency, $employmentType, $relocate, $client_id);
+        $stmt->bind_param("sdsii", $classification, $minSalary, $employmentType, $relocate, $client_id);
         $stmt->execute();
         $stmt->close();
     } else {
         $stmt = $database->prepare("
             INSERT INTO client_preferences
-                (client_id, preferred_classification, min_salary_expected, salary_currency, preferred_employment_type, willing_to_relocate)
-            VALUES (?, ?, ?, ?, ?, ?)
+                (client_id, preferred_classification, min_salary_expected, preferred_employment_type, willing_to_relocate)
+            VALUES (?, ?, ?, ?, ?)
         ");
-        $stmt->bind_param("isdssi", $client_id, $classification, $minSalary, $currency, $employmentType, $relocate);
+        $stmt->bind_param("isdsi", $client_id, $classification, $minSalary, $employmentType, $relocate);
         $stmt->execute();
         $stmt->close();
     }
