@@ -5,7 +5,7 @@
                 text: `You will be logged out of the DMW ${role} Portal.`,
                 icon: 'warning',
                 showCancelButton: true,
-                confirmButtonColor: '#0b1f4b',
+                confirmButtonColor: '#0b1f4b',  
                 cancelButtonColor: '#dc2626',
                 confirmButtonText: 'Yes, logout',
                 cancelButtonText: 'Cancel',

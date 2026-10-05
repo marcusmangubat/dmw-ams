@@ -1,4 +1,5 @@
 <?php
+
 declare(strict_types=1);
 
 session_start();
@@ -43,10 +44,21 @@ if ($method === 'POST' && $action === 'mark_read') {
 // Default action: list
 $limit = 20;
 $stmt = $database->prepare("
-    SELECT id, application_id, title, message, type, is_read, created_at
-    FROM notifications
-    WHERE user_email = ? AND usertype = ?
-    ORDER BY created_at DESC
+    SELECT
+        n.id,
+        n.application_id,
+        n.title,
+        n.message,
+        n.type,
+        n.is_read,
+        n.created_at,
+        r.position_title,
+        r.worksite_country
+    FROM notifications n
+    LEFT JOIN applications a ON n.application_id = a.id
+    LEFT JOIN rsf_job_orders r ON a.rsf_id = r.id
+    WHERE n.user_email = ? AND n.usertype = ?
+    ORDER BY n.created_at DESC
     LIMIT ?
 ");
 $stmt->bind_param('ssi', $userEmail, $userType, $limit);
@@ -65,4 +77,3 @@ notif_json([
     'notifications' => $rows,
     'unread_count' => $unreadCount,
 ]);
-

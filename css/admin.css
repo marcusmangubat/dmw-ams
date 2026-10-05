@@ -1,7 +1,7 @@
 /* Shared admin styles (apps/user/job-orders) */
 
 body {
-  font-family: 'Inter', system-ui, sans-serif;
+  font-family: "Inter", system-ui, sans-serif;
 }
 
 /* Sidebar animation on mobile toggle */
@@ -32,4 +32,3 @@ th {
   padding: 0.25rem 0.75rem;
   border-radius: 9999px;
 }
-

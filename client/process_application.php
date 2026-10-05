@@ -618,11 +618,19 @@ if ($action === 'step4_submit') {
     notify_admins(
         $database,
         'New Application Submitted',
-        "A new application (#$app_id) has been submitted for review.",
+        get_applicant_name($database, $app_id) . " has submitted a new application for {$job['position_title']} ({$job['rsf_number']}) at {$job['employer_name']}.",
         'new_application',
         $app_id
     );
 
+    // Notify evaluators — case is unclaimed, no one is assigned yet
+    notify_evaluators(
+        $database,
+        'New Application Available',
+        get_applicant_name($database, $app_id) . " submitted a new application for {$job['position_title']} ({$job['rsf_number']}). It is available for evaluation.",
+        'new_application',
+        $app_id
+    );
     app_json_out(['ok' => true, 'message' => 'Your application was submitted successfully. An evaluator will review it soon.']);
 }
 

@@ -17,80 +17,214 @@ require_once 'db.php';
 
 date_default_timezone_set('Asia/Manila');
 
+// ─────────────────────────────────────────────
+// LOGIN ATTEMPTS CONFIG
+// ─────────────────────────────────────────────
+const MAX_LOGIN_ATTEMPTS   = 5;   // failed attempts allowed
+const LOCKOUT_WINDOW_MIN   = 15;  // minutes the failed attempts are counted over
+const LOCKOUT_DURATION_MIN = 15;  // minutes the account/IP stays locked once the limit is hit
+
+/**
+ * Get the real client IP, accounting for common proxy headers.
+ */
+function get_client_ip(): string
+{
+    foreach (['HTTP_CF_CONNECTING_IP', 'HTTP_X_FORWARDED_FOR', 'HTTP_CLIENT_IP', 'REMOTE_ADDR'] as $key) {
+        if (!empty($_SERVER[$key])) {
+            $ip = trim(explode(',', $_SERVER[$key])[0]);
+            if (filter_var($ip, FILTER_VALIDATE_IP)) {
+                return $ip;
+            }
+        }
+    }
+    return $_SERVER['REMOTE_ADDR'] ?? '0.0.0.0';
+}
+
+/**
+ * Record a login attempt (success or failure) in the login_attempts table.
+ */
+function record_login_attempt(mysqli $database, string $email, string $ip, bool $success): void
+{
+    $stmt = $database->prepare(
+        "INSERT INTO login_attempts (email, ip_address, user_agent, success, attempted_at)
+         VALUES (?, ?, ?, ?, NOW())"
+    );
+    $userAgent = substr($_SERVER['HTTP_USER_AGENT'] ?? '', 0, 255);
+    $successInt = $success ? 1 : 0;
+    $stmt->bind_param("sssi", $email, $ip, $userAgent, $successInt);
+    $stmt->execute();
+    $stmt->close();
+}
+
+/**
+ * Count failed attempts for this email+IP within the lockout window.
+ * Only counts failures that happened AFTER the most recent success,
+ * so a good login resets the counter naturally.
+ */
+function count_recent_failed_attempts(mysqli $database, string $email, string $ip): int
+{
+    $stmt = $database->prepare(
+        "SELECT COUNT(*) AS cnt FROM login_attempts
+         WHERE email = ? AND ip_address = ? AND success = 0
+           AND attempted_at >= (NOW() - INTERVAL ? MINUTE)
+           AND attempted_at > COALESCE((
+                SELECT MAX(attempted_at) FROM login_attempts
+                WHERE email = ? AND ip_address = ? AND success = 1
+           ), '1970-01-01')"
+    );
+    $windowMin = LOCKOUT_WINDOW_MIN;
+    $stmt->bind_param("sisis", $email, $ip, $windowMin, $email, $ip);
+    $stmt->execute();
+    $result = $stmt->get_result();
+    $count = (int) $result->fetch_assoc()['cnt'];
+    $stmt->close();
+    return $count;
+}
+
+/**
+ * Returns minutes remaining on the lockout, or 0 if not locked out.
+ */
+function get_lockout_minutes_remaining(mysqli $database, string $email, string $ip): int
+{
+    $failedCount = count_recent_failed_attempts($database, $email, $ip);
+
+    if ($failedCount < MAX_LOGIN_ATTEMPTS) {
+        return 0;
+    }
+
+    // Find when the (MAX_LOGIN_ATTEMPTS)-th most recent qualifying failure happened,
+    // lockout counts down from that attempt.
+    $stmt = $database->prepare(
+        "SELECT attempted_at FROM login_attempts
+         WHERE email = ? AND ip_address = ? AND success = 0
+           AND attempted_at >= (NOW() - INTERVAL ? MINUTE)
+         ORDER BY attempted_at DESC
+         LIMIT 1"
+    );
+    $windowMin = LOCKOUT_WINDOW_MIN;
+    $stmt->bind_param("sis", $email, $ip, $windowMin);
+    $stmt->execute();
+    $result = $stmt->get_result();
+    $row = $result->fetch_assoc();
+    $stmt->close();
+
+    if (!$row) {
+        return 0;
+    }
+
+    $lastFailedAt = strtotime($row['attempted_at']);
+    $lockoutEnds  = $lastFailedAt + (LOCKOUT_DURATION_MIN * 60);
+    $secondsLeft  = $lockoutEnds - time();
+
+    return $secondsLeft > 0 ? (int) ceil($secondsLeft / 60) : 0;
+}
+
 $error = '';
 $email_value = '';
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $email    = trim($_POST['email'] ?? '');
     $password = $_POST['password'] ?? '';
+    $ip       = get_client_ip();
 
     $email_value = $email;
 
     if (empty($email) || empty($password)) {
         $error = "Please enter both email and password.";
     } else {
-        $stmt = $database->prepare("SELECT email, usertype, password FROM webuser WHERE email = ? LIMIT 1");
-        $stmt->bind_param("s", $email);
-        $stmt->execute();
-        $result = $stmt->get_result();
 
-        if ($result->num_rows === 1) {
-            $user = $result->fetch_assoc();
+        // ── Check lockout status BEFORE verifying credentials ──
+        $lockoutMinutes = get_lockout_minutes_remaining($database, $email, $ip);
 
-            if (password_verify($password, $user['password'])) {
+        if ($lockoutMinutes > 0) {
+            $error = "Too many failed login attempts. Please try again in "
+                . $lockoutMinutes . " minute" . ($lockoutMinutes === 1 ? "" : "s") . ".";
+        } else {
 
-                $_SESSION['user_email'] = $user['email'];
-                $_SESSION['user_type']  = $user['usertype'];
-                $_SESSION['login_success'] = true;
+            $stmt = $database->prepare("SELECT email, usertype, password FROM webuser WHERE email = ? LIMIT 1");
+            $stmt->bind_param("s", $email);
+            $stmt->execute();
+            $result = $stmt->get_result();
 
-                $stmt_name = $database->prepare("
-                    SELECT CONCAT(first_name, ' ', last_name) AS full_name 
-                    FROM clients WHERE email = ? LIMIT 1
-                ");
-                $stmt_name->bind_param("s", $email);
-                $stmt_name->execute();
-                $name_result = $stmt_name->get_result();
-                if ($name_result->num_rows === 1) {
-                    $_SESSION['full_name'] = $name_result->fetch_assoc()['full_name'];
-                }
-                $stmt_name->close();
+            if ($result->num_rows === 1) {
+                $user = $result->fetch_assoc();
 
-                if (isset($_POST['remember']) && $_POST['remember'] === 'on') {
-                    $token   = bin2hex(random_bytes(32));
-                    $expires = date('Y-m-d H:i:s', time() + (30 * 24 * 60 * 60));
-                    $stmt_token = $database->prepare("UPDATE webuser SET remember_token = ?, remember_expires = ? WHERE email = ?");
-                    $stmt_token->bind_param("sss", $token, $expires, $email);
-                    $stmt_token->execute();
-                    $stmt_token->close();
-                    setcookie('remember_token', $token, [
-                        'expires'  => time() + (30 * 24 * 60 * 60),
-                        'path'     => '/',
-                        'secure'   => false,
-                        'httponly' => true,
-                        'samesite' => 'Strict'
-                    ]);
-                }
+                if (password_verify($password, $user['password'])) {
 
-                $redirect_map = [
-                    'client'    => 'client/index.php',
-                    'admin'     => 'admin/dashboard.php',
-                    'evaluator' => 'evaluator/index.php',
-                ];
+                    // ── Success: log it, reset counter naturally ──
+                    record_login_attempt($database, $email, $ip, true);
 
-                if (isset($redirect_map[$user['usertype']])) {
-                    header("Location: " . $redirect_map[$user['usertype']]);
-                    exit;
+                    $_SESSION['user_email'] = $user['email'];
+                    $_SESSION['user_type']  = $user['usertype'];
+                    $_SESSION['login_success'] = true;
+
+                    $stmt_name = $database->prepare("
+                        SELECT CONCAT(first_name, ' ', last_name) AS full_name 
+                        FROM clients WHERE email = ? LIMIT 1
+                    ");
+                    $stmt_name->bind_param("s", $email);
+                    $stmt_name->execute();
+                    $name_result = $stmt_name->get_result();
+                    if ($name_result->num_rows === 1) {
+                        $_SESSION['full_name'] = $name_result->fetch_assoc()['full_name'];
+                    }
+                    $stmt_name->close();
+
+                    if (isset($_POST['remember']) && $_POST['remember'] === 'on') {
+                        $token   = bin2hex(random_bytes(32));
+                        $expires = date('Y-m-d H:i:s', time() + (30 * 24 * 60 * 60));
+                        $stmt_token = $database->prepare("UPDATE webuser SET remember_token = ?, remember_expires = ? WHERE email = ?");
+                        $stmt_token->bind_param("sss", $token, $expires, $email);
+                        $stmt_token->execute();
+                        $stmt_token->close();
+                        setcookie('remember_token', $token, [
+                            'expires'  => time() + (30 * 24 * 60 * 60),
+                            'path'     => '/',
+                            'secure'   => false,
+                            'httponly' => true,
+                            'samesite' => 'Strict'
+                        ]);
+                    }
+
+                    $redirect_map = [
+                        'client'    => 'client/index.php',
+                        'admin'     => 'admin/dashboard.php',
+                        'evaluator' => 'evaluator/index.php',
+                    ];
+
+                    if (isset($redirect_map[$user['usertype']])) {
+                        header("Location: " . $redirect_map[$user['usertype']]);
+                        exit;
+                    } else {
+                        $error = "Account type not supported.";
+                    }
                 } else {
-                    $error = "Account type not supported.";
+                    // ── Failure: wrong password ──
+                    record_login_attempt($database, $email, $ip, false);
+                    $error = "Invalid email or password."; // Password is incorrect, but we show the same message as an invalid email to avoid giving hints about which one is wrong
+
+                    $remaining = MAX_LOGIN_ATTEMPTS - count_recent_failed_attempts($database, $email, $ip);
+                    if ($remaining > 0 && $remaining <= 2) {
+                        $error .= " You have " . $remaining . " attempt" . ($remaining === 1 ? "" : "s") . " left before your account is temporarily locked.";
+                    }
                 }
             } else {
-                $error = "Invalid email or password."; // Password is incorrect, but we show the same message as an invalid email to avoid giving hints about which one is wrong
+                // ── Failure: unknown email ──
+                record_login_attempt($database, $email, $ip, false);
+                $error = "Invalid email or password."; // Avoid revealing whether email or password was incorrect, the email is invalid
             }
-        } else {
-            $error = "Invalid email or password."; // Avoid revealing whether email or password was incorrect, the email is invalid
+            $stmt->close();
         }
-        $stmt->close();
     }
+}
+
+// ── Attempts used so far, for display under the password field ──
+$attemptsUsed = 0;
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($email_value)) {
+    $attemptsUsed = min(
+        MAX_LOGIN_ATTEMPTS,
+        count_recent_failed_attempts($database, $email_value, get_client_ip())
+    );
 }
 ?>
 <!DOCTYPE html>
@@ -164,6 +298,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         .btn-primary:hover {
             transform: translateY(-2px);
             box-shadow: 0 16px 30px -8px rgb(11 31 75 / 0.5);
+        }
+
+        .btn-primary:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none;
+            box-shadow: none;
         }
 
         /* ══════════════════════════════════════════
@@ -367,7 +508,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     </div>
                 </div>
 
-                <h2 class="serif text-2xl font-semibold text-[var(--navy)] mb-1">Welcome Back</h2>
+                <h2 class="serif text-2xl font-semibold text-[var(--navy)] mb-1">Welcome!</h2>
                 <p class="text-slate-500 text-sm mb-8">Sign in to your Portal</p>
 
                 <?php if ($error): ?>
@@ -375,6 +516,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         <?= htmlspecialchars($error) ?>
                     </div>
                 <?php endif; ?>
+
+                <?php $isLockedOut = isset($lockoutMinutes) && $lockoutMinutes > 0; ?>
 
                 <form method="POST" action="" class="space-y-5">
 
@@ -390,7 +533,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             <input type="email" name="email" id="email" required
                                 value="<?= htmlspecialchars($email_value) ?>"
                                 class="input-field w-full bg-white border border-slate-300 rounded-2xl py-3.5 pl-11 pr-5 text-[var(--navy)] placeholder:text-slate-400 focus:outline-none text-sm"
-                                placeholder="yourname@example.com">
+                                placeholder="juandelacruz@example.com">
                         </div>
                     </div>
 
@@ -411,6 +554,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                                 <i class="fas fa-eye text-sm" id="eyeIcon"></i>
                             </button>
                         </div>
+                        <?php if ($attemptsUsed > 0): ?>
+                            <p class="mt-2 text-xs font-medium <?= $attemptsUsed >= MAX_LOGIN_ATTEMPTS ? 'text-red-600' : 'text-amber-600' ?>">
+                                Login attempts: <?= $attemptsUsed ?>/<?= MAX_LOGIN_ATTEMPTS ?>
+                            </p>
+                        <?php endif; ?>
                     </div>
 
                     <!-- Remember me / Forgot password -->
@@ -426,7 +574,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         </a>
                     </div>
 
-                    <button type="submit"
+                    <button type="submit" <?= $isLockedOut ? 'disabled' : '' ?>
                         class="btn-primary w-full py-4 rounded-2xl text-white font-semibold text-sm tracking-wider mt-2">
                         SIGN IN
                     </button>

@@ -16,6 +16,12 @@ $client_id    = null;
 $errors       = [];
 $success_msg  = '';
 
+// CSRF token for the profile picture forms
+if (!isset($_SESSION['csrf_token'])) {
+    $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+}
+$csrf_token = $_SESSION['csrf_token'];
+
 // Get client id
 $stmt_c = $database->prepare("SELECT cid FROM clients WHERE email = ? LIMIT 1");
 $stmt_c->bind_param("s", $client_email);
@@ -121,10 +127,8 @@ $country_list = [
     'Vietnam',
 ];
 
-// ────────────────────────────────────────────────
 // Reference / lookup tables (fetched before POST handling so
 // submitted values can be validated against real records)
-// ────────────────────────────────────────────────
 $degree_programs = [];
 $dp_res = $database->query("SELECT id, degree_name, degree_category FROM degree_programs ORDER BY degree_category, degree_name");
 if ($dp_res) {
@@ -147,6 +151,17 @@ if ($js_res) {
     }
 }
 
+// Salary range options + a lookup keyed by id (for validating a submitted id)
+$salary_ranges = [];
+$valid_salary_range_ids = [];
+$sr_res = $database->query("SELECT id, range_label, min_salary, max_salary FROM salary_ranges ORDER BY sort_order ASC, min_salary ASC");
+if ($sr_res) {
+    while ($row = $sr_res->fetch_assoc()) {
+        $salary_ranges[] = $row;
+        $valid_salary_range_ids[(int)$row['id']] = $row;
+    }
+}
+
 // Group subcategories by category, for the cascading dropdown (client-side)
 $subcategories_by_category = [];
 foreach ($job_subcategories as $sc) {
@@ -159,7 +174,122 @@ foreach ($job_subcategories as $sc) {
 // Handle form submissions
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
-    // ── Section 1: Personal Information → clients table ──
+    // ── Section 0: Profile Picture Upload → clients.profile_picture ──
+    if (isset($_POST['upload_picture'])) {
+
+        if (!isset($_POST['csrf_token']) || !hash_equals($_SESSION['csrf_token'], $_POST['csrf_token'])) {
+            $errors[] = 'Invalid form submission. Please refresh and try again.';
+        }
+
+        if (empty($errors)) {
+            if (!isset($_FILES['profile_picture']) || $_FILES['profile_picture']['error'] === UPLOAD_ERR_NO_FILE) {
+                $errors[] = 'Please choose an image to upload.';
+            } elseif ($_FILES['profile_picture']['error'] !== UPLOAD_ERR_OK) {
+                $errors[] = 'File upload failed. Please try again.';
+            } else {
+                $file = $_FILES['profile_picture'];
+
+                if ($file['size'] > 2 * 1024 * 1024) {
+                    $errors[] = 'Profile picture must not exceed 2MB.';
+                }
+
+                // Verify actual MIME type server-side — never trust $_FILES['type']
+                $allowed_mimes = [
+                    'image/jpeg' => 'jpg',
+                    'image/png'  => 'png',
+                    'image/webp' => 'webp',
+                ];
+                $finfo     = finfo_open(FILEINFO_MIME_TYPE);
+                $real_mime = finfo_file($finfo, $file['tmp_name']);
+                finfo_close($finfo);
+
+                if (!isset($allowed_mimes[$real_mime])) {
+                    $errors[] = 'Only JPG, PNG, or WEBP images are allowed.';
+                }
+
+                if (empty($errors) && @getimagesize($file['tmp_name']) === false) {
+                    $errors[] = 'The uploaded file is not a valid image.';
+                }
+
+                if (empty($errors)) {
+                    $ext          = $allowed_mimes[$real_mime];
+                    $new_filename = $client_id . '_' . time() . '_' . bin2hex(random_bytes(4)) . '.' . $ext;
+
+                    $upload_dir = __DIR__ . '/../uploads/profile_pictures/';
+                    if (!is_dir($upload_dir)) {
+                        mkdir($upload_dir, 0755, true);
+                    }
+
+                    $destination   = $upload_dir . $new_filename;
+                    $relative_path = 'uploads/profile_pictures/' . $new_filename;
+
+                    if (move_uploaded_file($file['tmp_name'], $destination)) {
+
+                        // Grab old picture path so we can delete it after DB update succeeds
+                        $stmt_old = $database->prepare("SELECT profile_picture FROM clients WHERE cid = ?");
+                        $stmt_old->bind_param("i", $client_id);
+                        $stmt_old->execute();
+                        $old_picture = $stmt_old->get_result()->fetch_assoc()['profile_picture'] ?? null;
+                        $stmt_old->close();
+
+                        $stmt_up = $database->prepare("UPDATE clients SET profile_picture = ? WHERE cid = ?");
+                        $stmt_up->bind_param("si", $relative_path, $client_id);
+
+                        if ($stmt_up->execute()) {
+                            $success_msg = 'Profile picture updated successfully.';
+
+                            if (!empty($old_picture)) {
+                                $old_full_path = __DIR__ . '/../' . $old_picture;
+                                if (is_file($old_full_path)) {
+                                    @unlink($old_full_path);
+                                }
+                            }
+                        } else {
+                            @unlink($destination); // rollback saved file if DB write failed
+                            $errors[] = 'Something went wrong while saving your profile picture. Please try again.';
+                        }
+                        $stmt_up->close();
+                    } else {
+                        $errors[] = 'Could not save the uploaded file. Please try again.';
+                    }
+                }
+            }
+        }
+    }
+
+    //  Remove Profile Picture 
+    if (isset($_POST['remove_picture'])) {
+
+        if (!isset($_POST['csrf_token']) || !hash_equals($_SESSION['csrf_token'], $_POST['csrf_token'])) {
+            $errors[] = 'Invalid form submission. Please refresh and try again.';
+        }
+
+        if (empty($errors)) {
+            $stmt_old = $database->prepare("SELECT profile_picture FROM clients WHERE cid = ?");
+            $stmt_old->bind_param("i", $client_id);
+            $stmt_old->execute();
+            $old_picture = $stmt_old->get_result()->fetch_assoc()['profile_picture'] ?? null;
+            $stmt_old->close();
+
+            $stmt_rm = $database->prepare("UPDATE clients SET profile_picture = NULL WHERE cid = ?");
+            $stmt_rm->bind_param("i", $client_id);
+
+            if ($stmt_rm->execute()) {
+                if (!empty($old_picture)) {
+                    $old_full_path = __DIR__ . '/../' . $old_picture;
+                    if (is_file($old_full_path)) {
+                        @unlink($old_full_path);
+                    }
+                }
+                $success_msg = 'Profile picture removed.';
+            } else {
+                $errors[] = 'Something went wrong while removing your profile picture.';
+            }
+            $stmt_rm->close();
+        }
+    }
+
+    // Section 1: Personal Information → clients table
     if (isset($_POST['save_personal'])) {
 
         $first_name = trim($_POST['first_name'] ?? '');
@@ -341,41 +471,42 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (isset($_POST['save_preferences'])) {
 
         $preferred_classification = trim($_POST['preferred_classification'] ?? '');
-        $min_salary   = trim($_POST['min_salary_expected'] ?? '');
-        // Salary currency is always PHP for applicants — no longer a user-editable field
-        // (client_preferences no longer stores a currency column; PHP is implied).
+        $salary_range_id_raw = trim($_POST['salary_range_id'] ?? '');
         $employment_type = trim($_POST['preferred_employment_type'] ?? 'Full-time');
-        $willing_to_relocate = isset($_POST['willing_to_relocate']) ? 1 : 0;
 
         if ($preferred_classification === '') $errors[] = 'Preferred job classification is required.';
         if (!in_array($employment_type, $employment_type_options, true)) {
             $errors[] = 'Invalid employment type selected.';
         }
-        if ($min_salary !== '' && (!is_numeric($min_salary) || (float)$min_salary < 0)) {
-            $errors[] = 'Minimum expected salary must be a valid non-negative number.';
-        }
 
-        $min_salary = $min_salary === '' ? null : (float)$min_salary;
+        // Validate the submitted salary range against the real lookup table
+        // (salary is optional — an empty selection is allowed).
+        $salary_range_id = null;
+        if ($salary_range_id_raw !== '') {
+            if (!ctype_digit($salary_range_id_raw) || !array_key_exists((int)$salary_range_id_raw, $valid_salary_range_ids)) {
+                $errors[] = 'Please select a valid salary range.';
+            } else {
+                $salary_range_id = (int) $salary_range_id_raw;
+            }
+        }
 
         if (empty($errors)) {
             $stmt = $database->prepare("
                 INSERT INTO client_preferences (
-                    client_id, preferred_classification, min_salary_expected,
-                    preferred_employment_type, willing_to_relocate
-                ) VALUES (?, ?, ?, ?, ?)
+                    client_id, preferred_classification, salary_range_id,
+                    preferred_employment_type
+                ) VALUES (?, ?, ?, ?)
                 ON DUPLICATE KEY UPDATE
                     preferred_classification = VALUES(preferred_classification),
-                    min_salary_expected = VALUES(min_salary_expected),
-                    preferred_employment_type = VALUES(preferred_employment_type),
-                    willing_to_relocate = VALUES(willing_to_relocate)
+                    salary_range_id = VALUES(salary_range_id),
+                    preferred_employment_type = VALUES(preferred_employment_type)
             ");
             $stmt->bind_param(
-                "isdsi",
+                "isis",
                 $client_id,
                 $preferred_classification,
-                $min_salary,
-                $employment_type,
-                $willing_to_relocate
+                $salary_range_id,
+                $employment_type
             );
 
             if ($stmt->execute()) {
@@ -528,7 +659,13 @@ $profile_res = $stmt->get_result();
 $profile = $profile_res->num_rows === 1 ? $profile_res->fetch_assoc() : [];
 $stmt->close();
 
-$stmt = $database->prepare("SELECT * FROM client_preferences WHERE client_id = ? LIMIT 1");
+$stmt = $database->prepare("
+    SELECT cp.*, sr.range_label AS salary_range_label
+    FROM client_preferences cp
+    LEFT JOIN salary_ranges sr ON sr.id = cp.salary_range_id
+    WHERE cp.client_id = ?
+    LIMIT 1
+");
 $stmt->bind_param("i", $client_id);
 $stmt->execute();
 $pref_res = $stmt->get_result();
@@ -584,6 +721,9 @@ $completeness_fields = [
 ];
 $filled_count = count(array_filter($completeness_fields, fn($v) => $v !== null && $v !== ''));
 $completeness_pct = (int)round(($filled_count / count($completeness_fields)) * 100);
+
+$has_picture = !empty($client['profile_picture']);
+$picture_url = $has_picture ? '../' . $client['profile_picture'] : null;
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -600,13 +740,6 @@ $completeness_pct = (int)round(($filled_count / count($completeness_fields)) * 1
     <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
     <link rel="stylesheet" href="../css/dashboard.css">
     <style>
-        /* ── Page-specific additions that extend dashboard.css ──
-           All colors below reuse existing dashboard variables
-           (--indigo, --blue-lt, --border, --surface, --text1/2/3).
-           A handful of extra accent dots are declared locally so
-           each settings section keeps a distinct, recognizable
-           color without introducing a new global palette. */
-
         :root {
             --settings-emerald: #059669;
             --settings-amber: #d97706;
@@ -622,7 +755,7 @@ $completeness_pct = (int)round(($filled_count / count($completeness_fields)) * 1
             margin: 0 auto;
         }
 
-        /* ── Profile header w/ completeness meter ── */
+        /*  Profile header w/ completeness meter  */
         .profile-header {
             display: flex;
             align-items: center;
@@ -698,7 +831,7 @@ $completeness_pct = (int)round(($filled_count / count($completeness_fields)) * 1
             }
         }
 
-        /* ── Section nav (jump links) ── */
+        /*  Section nav (jump links)  */
         .section-nav {
             display: flex;
             gap: 8px;
@@ -929,7 +1062,7 @@ $completeness_pct = (int)round(($filled_count / count($completeness_fields)) * 1
             padding: 0;
         }
 
-        /* ── Toggle switch (willing to relocate) ── */
+        /*  Toggle switch (willing to relocate)  */
         .toggle-row {
             display: flex;
             align-items: center;
@@ -988,7 +1121,7 @@ $completeness_pct = (int)round(($filled_count / count($completeness_fields)) * 1
             transform: translateX(18px);
         }
 
-        /* ── Dynamic repeatable rows (countries / positions) ── */
+        /*  Dynamic repeatable rows (countries / positions)  */
         .dyn-list {
             display: flex;
             flex-direction: column;
@@ -1112,6 +1245,61 @@ $completeness_pct = (int)round(($filled_count / count($completeness_fields)) * 1
             filter: none;
 
         }
+
+        .avatar-upload-wrap {
+            position: relative;
+            flex-shrink: 0;
+        }
+
+        .profile-avatar-lg {
+            background-size: cover;
+            background-position: center;
+            background-repeat: no-repeat;
+        }
+
+        .avatar-camera-btn {
+            position: absolute;
+            bottom: -4px;
+            right: -4px;
+            width: 24px;
+            height: 24px;
+            border-radius: 50%;
+            background: var(--indigo);
+            color: #fff;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 10px;
+            cursor: pointer;
+            border: 2px solid #fff;
+            transition: background .15s;
+        }
+
+        .avatar-camera-btn:hover {
+            background: #4338ca;
+        }
+
+        .avatar-remove-btn {
+            position: absolute;
+            top: -4px;
+            right: -4px;
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            background: #dc2626;
+            color: #fff;
+            border: 2px solid #fff;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 9px;
+            cursor: pointer;
+            padding: 0;
+        }
+
+        .avatar-remove-btn:hover {
+            background: #b91c1c;
+        }
     </style>
 </head>
 
@@ -1133,7 +1321,9 @@ $completeness_pct = (int)round(($filled_count / count($completeness_fields)) * 1
                 <i class="fas fa-bell"></i>
                 <span class="notif-dot"></span>
             </div>
-            <div class="topbar-avatar"><?= val($initials) ?></div>
+            <div class="topbar-avatar" <?= $has_picture ? "style=\"background-image:url('" . val($picture_url) . "');background-size:cover;background-position:center;\"" : '' ?>>
+                <?= $has_picture ? '' : val($initials) ?>
+            </div>
         </div>
     </header>
 
@@ -1171,13 +1361,36 @@ $completeness_pct = (int)round(($filled_count / count($completeness_fields)) * 1
                     </div>
                 </div>
             <?php endif; ?>
-
             <div class="card fade-in d1">
                 <div class="profile-header">
-                    <div class="profile-avatar-lg"><?= val($initials) ?></div>
+                    <div class="avatar-upload-wrap">
+                        <div class="profile-avatar-lg" <?= $has_picture ? "style=\"background-image:url('" . val($picture_url) . "');\"" : '' ?>>
+                            <?= $has_picture ? '' : val($initials) ?>
+                        </div>
+
+                        <form method="POST" action="profile.php" enctype="multipart/form-data" id="pictureForm">
+                            <input type="hidden" name="csrf_token" value="<?= val($csrf_token) ?>">
+                            <input type="hidden" name="upload_picture" value="1">
+                            <label for="pictureInput" class="avatar-camera-btn" title="Change profile picture">
+                                <i class="fas fa-camera"></i>
+                            </label>
+                            <input type="file" name="profile_picture" id="pictureInput" accept="image/jpeg,image/png,image/webp" hidden>
+                        </form>
+
+                        <?php if ($has_picture): ?>
+                            <form method="POST" action="profile.php" style="display:inline;">
+                                <input type="hidden" name="csrf_token" value="<?= val($csrf_token) ?>">
+                                <button type="submit" name="remove_picture" class="avatar-remove-btn" title="Remove profile picture"
+                                    onclick="return confirm('Remove your profile picture?');">
+                                    <i class="fas fa-xmark"></i>
+                                </button>
+                            </form>
+                        <?php endif; ?>
+                    </div>
                     <div>
                         <h3><?= val($full_name) ?></h3>
                         <p><?= val($client['email'] ?? '') ?></p>
+                        <span class="f-hint">JPG, PNG, or WEBP · Max 2MB</span>
                     </div>
                     <div class="completeness-wrap">
                         <div class="completeness-label">
@@ -1456,8 +1669,21 @@ $completeness_pct = (int)round(($filled_count / count($completeness_fields)) * 1
                         </div>
 
                         <div class="f-group">
-                            <label class="f-label">Minimum Expected Salary</label>
-                            <input class="f-input" type="number" step="0.01" min="0" name="min_salary_expected" value="<?= val($preferences['min_salary_expected'] ?? '') ?>" placeholder="e.g. 25000">
+                            <label class="f-label">Expected Salary Range</label>
+                            <select class="f-select" name="salary_range_id">
+                                <option value="">— Not specified —</option>
+                                <?php foreach ($salary_ranges as $sr): ?>
+                                    <option value="<?= val($sr['id']) ?>" <?= (string)($preferences['salary_range_id'] ?? '') === (string)$sr['id'] ? 'selected' : '' ?>>
+                                        <?= val($sr['range_label']) ?>
+                                    </option>
+                                <?php endforeach; ?>
+                            </select>
+                            <?php if (!empty($preferences['salary_range_label'])): ?>
+                                <span class="f-hint">
+                                    <i class="fas fa-circle-check" style="color:var(--settings-emerald)"></i>
+                                    Currently selected: <strong><?= val($preferences['salary_range_label']) ?></strong>
+                                </span>
+                            <?php endif; ?>
                         </div>
 
                         <div class="f-group">
@@ -1468,17 +1694,6 @@ $completeness_pct = (int)round(($filled_count / count($completeness_fields)) * 1
                                 All applicant salary expectations are recorded in Philippine Peso.
                             </small>
                         </div>
-
-                        <div class="f-group full">
-                            <div class="toggle-row">
-                                <label class="f-label">Willing to Relocate for Work</label>
-                                <label class="switch">
-                                    <input type="checkbox" name="willing_to_relocate" <?= (($preferences['willing_to_relocate'] ?? 1) == 1) ? 'checked' : '' ?>>
-                                    <span class="switch-slider"></span>
-                                </label>
-                            </div>
-                        </div>
-
                     </div>
 
                     <div class="form-actions">
@@ -1658,13 +1873,32 @@ $completeness_pct = (int)round(($filled_count / count($completeness_fields)) * 1
     </div>
 
     <script>
-        document.getElementById('live-date').textContent =
-            new Date().toLocaleDateString('en-PH', {
+        /*  Live date + time  */
+        function updateLiveDateTime() {
+            const el = document.getElementById('live-date');
+            if (!el) return;
+
+            const now = new Date();
+
+            const datePart = now.toLocaleDateString('en-PH', {
                 weekday: 'short',
                 year: 'numeric',
                 month: 'short',
                 day: 'numeric'
             }).toUpperCase();
+
+            const timePart = now.toLocaleTimeString('en-PH', {
+                hour: 'numeric',
+                minute: '2-digit',
+                second: '2-digit',
+                hour12: true
+            }).toLowerCase();
+
+            el.textContent = `${datePart} | ${timePart}`;
+        }
+
+        updateLiveDateTime();
+        setInterval(updateLiveDateTime, 1000); // refresh every second
     </script>
 
     <script>
@@ -1796,6 +2030,11 @@ $completeness_pct = (int)round(($filled_count / count($completeness_fields)) * 1
                     input.closest('[data-row]').remove();
                 }
             });
+        });
+        document.getElementById('pictureInput').addEventListener('change', function() {
+            if (this.files && this.files.length > 0) {
+                document.getElementById('pictureForm').submit();
+            }
         });
     </script>
 

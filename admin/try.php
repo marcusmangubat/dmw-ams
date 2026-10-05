@@ -28,10 +28,18 @@ if (!$admin_name) {
     $admin_name = $row['full_name'] ?? 'Admin';
 }
 
-/* ═══════════════════════════════════════════════════════════════════
+// Greeting + avatar initials — same logic as dashboard.php, needed by the shared header/subheader
+$hour     = (int) date('H');
+$greeting = $hour < 12 ? 'Good morning' : ($hour < 18 ? 'Good afternoon' : 'Good evening');
+$parts    = explode(' ', trim($admin_name));
+$initials = strtoupper(
+    (substr($parts[0] ?? '', 0, 1)) . (substr($parts[count($parts) - 1] ?? '', 0, 1))
+);
+
+/* 
    FILTERS — read straight from the querystring, same four filters as
    the dashboard subbar (month / province / job_type / country).
-═══════════════════════════════════════════════════════════════════ */
+ */
 $f_month    = trim($_GET['month'] ?? '');
 $f_province = trim($_GET['province'] ?? '');
 $f_jobtype  = trim($_GET['job_type'] ?? '');
@@ -127,15 +135,35 @@ function fullName(array $row): string
     ])));
 }
 
+// Option lists for the subheader's Job Type / Destination filter pills
+// (reuses rsf_job_orders, the same source dashboard-api.php draws from)
+$jobTypeOptions = [];
+$res = $database->query("SELECT DISTINCT position_title FROM rsf_job_orders WHERE position_title IS NOT NULL AND position_title <> '' ORDER BY position_title");
+while ($row = $res->fetch_assoc()) $jobTypeOptions[] = $row['position_title'];
+
+$countryOptions = [];
+$res = $database->query("SELECT DISTINCT worksite_country FROM rsf_job_orders WHERE worksite_country IS NOT NULL AND worksite_country <> '' ORDER BY worksite_country");
+while ($row = $res->fetch_assoc()) $countryOptions[] = $row['worksite_country'];
+
+// Dock "Apps" badge — same query as dashboard.php's floating dock
+$badge_stmt = $database->prepare("
+    SELECT COUNT(*) as total
+    FROM applications
+    WHERE status IN ('pending', 'for_compliance', 'resubmitted')
+");
+$badge_stmt->execute();
+$active_apps = $badge_stmt->get_result()->fetch_assoc()['total'] ?? 0;
+$badge_stmt->close();
+
 [$where, $types, $params] = buildWhere();
 $whereSql = whereSql($where);
 $baseFrom = "FROM applications a
              JOIN clients c ON c.cid = a.client_id
              JOIN rsf_job_orders j ON j.id = a.rsf_id";
 
-/* ═══════════════════════════════════════════════════════════════════
+/* 
    REPORT 1 — Applicants by Gender
-═══════════════════════════════════════════════════════════════════ */
+ */
 $genderSummary = [];
 $res = q($database, "
     SELECT COALESCE(NULLIF(TRIM(c.gender), ''), 'Not Specified') AS gender,
@@ -164,9 +192,9 @@ $res = q($database, "
 ", $types, $params);
 while ($row = $res->fetch_assoc()) $genderDetail[] = $row;
 
-/* ═══════════════════════════════════════════════════════════════════
+/* 
    REPORT 2 — Approved Applicants by Country
-═══════════════════════════════════════════════════════════════════ */
+ */
 $whereApproved = whereSql(array_merge($where, ["a.status = 'approved'"]));
 
 $countrySummary = [];
@@ -192,9 +220,9 @@ $res = q($database, "
 ", $types, $params);
 while ($row = $res->fetch_assoc()) $countryDetail[] = $row;
 
-/* ═══════════════════════════════════════════════════════════════════
+/* 
    REPORT 3 — Application Status Summary
-═══════════════════════════════════════════════════════════════════ */
+ */
 $statusCounts = [];
 $res = q($database, "
     SELECT a.status, COUNT(*) AS cnt
@@ -220,9 +248,9 @@ foreach ($statusOrder as $s) {
     ];
 }
 
-/* ═══════════════════════════════════════════════════════════════════
+/* 
    REPORT 4 — Applicants by Province / City of Origin
-═══════════════════════════════════════════════════════════════════ */
+ */
 $provinceSummary = [];
 $res = q($database, "
     SELECT c.province, c.city_municipality,
@@ -236,9 +264,9 @@ $res = q($database, "
 ", $types, $params);
 while ($row = $res->fetch_assoc()) $provinceSummary[] = $row;
 
-/* ═══════════════════════════════════════════════════════════════════
+/* 
    REPORT 5 — Applicants by Age Group
-═══════════════════════════════════════════════════════════════════ */
+ */
 $ageSummary = [];
 $res = q($database, "
     SELECT
@@ -260,9 +288,9 @@ $res = q($database, "
 ", $types, $params);
 while ($row = $res->fetch_assoc()) $ageSummary[] = $row;
 
-/* ═══════════════════════════════════════════════════════════════════
+/* 
    REPORT 6 — Applicants by Educational Attainment
-═══════════════════════════════════════════════════════════════════ */
+ */
 $eduSummary = [];
 $res = q($database, "
     SELECT COALESCE(cp.educational_attainment, 'Not Indicated') AS education,
@@ -277,9 +305,9 @@ $res = q($database, "
 ", $types, $params);
 while ($row = $res->fetch_assoc()) $eduSummary[] = $row;
 
-/* ═══════════════════════════════════════════════════════════════════
+/* 
    REPORT 7 — Job Order Slot Utilization
-═══════════════════════════════════════════════════════════════════ */
+ */
 $jobWhere  = [];
 $jobTypes  = '';
 $jobParams = [];
@@ -310,9 +338,9 @@ $res = q($database, "
 ", $jobTypes, $jobParams);
 while ($row = $res->fetch_assoc()) $jobSummary[] = $row;
 
-/* ═══════════════════════════════════════════════════════════════════
+/* 
    REPORT 8 — Evaluator Turnaround / Workload
-═══════════════════════════════════════════════════════════════════ */
+ */
 $evalWhere  = array_merge($where, ["e.decision IS NOT NULL"]);
 $evalWhereSql = whereSql($evalWhere);
 
@@ -336,6 +364,61 @@ $res = q($database, "
 ", $types, $params);
 while ($row = $res->fetch_assoc()) $evalSummary[] = $row;
 
+/* 
+   REPORT 9 — Document Compliance
+   Required vs. submitted documents per application, based on each
+   job order's rsf_required_documents list (is_required = 1) matched
+   against application_documents.document_type.
+ */
+$docCompliance = [];
+$res = q($database, "
+    SELECT a.id, a.rsf_id,
+           c.first_name, c.middle_name, c.last_name, c.suffix,
+           j.rsf_number, j.employer_name,
+           (SELECT COUNT(*) FROM rsf_required_documents rd
+              WHERE rd.rsf_id = a.rsf_id AND rd.is_required = 1) AS required_count,
+           (SELECT COUNT(DISTINCT rd2.document_type)
+              FROM rsf_required_documents rd2
+              JOIN application_documents ad
+                ON ad.application_id = a.id AND ad.document_type = rd2.document_type
+              WHERE rd2.rsf_id = a.rsf_id AND rd2.is_required = 1) AS submitted_count
+    $baseFrom
+    $whereSql
+    ORDER BY a.submitted_at DESC
+", $types, $params);
+while ($row = $res->fetch_assoc()) $docCompliance[] = $row;
+
+// Attach completion % + missing document names per application.
+// Reuses one prepared statement across the loop instead of re-preparing each time.
+$missingStmt = $database->prepare("
+    SELECT rd.document_name
+    FROM rsf_required_documents rd
+    WHERE rd.rsf_id = ? AND rd.is_required = 1
+      AND rd.document_type NOT IN (
+          SELECT ad.document_type FROM application_documents ad WHERE ad.application_id = ?
+      )
+");
+foreach ($docCompliance as &$d) {
+    $required  = (int) $d['required_count'];
+    $submitted = (int) $d['submitted_count'];
+    $d['completion_pct'] = $required > 0 ? round(($submitted / $required) * 100) : 100;
+
+    $rsfId = (int) $d['rsf_id'];
+    $appId = (int) $d['id'];
+    $missingStmt->bind_param('ii', $rsfId, $appId);
+    $missingStmt->execute();
+    $missingRes = $missingStmt->get_result();
+    $names = [];
+    while ($m = $missingRes->fetch_assoc()) $names[] = $m['document_name'];
+    $d['missing_documents'] = $names ? implode(', ', $names) : '—';
+}
+unset($d);
+$missingStmt->close();
+
+$docCompleteCount   = count(array_filter($docCompliance, fn($d) => $d['completion_pct'] == 100));
+$docIncompleteCount = count($docCompliance) - $docCompleteCount;
+$docAvgCompletion   = $docCompliance ? round(array_sum(array_column($docCompliance, 'completion_pct')) / count($docCompliance)) : 0;
+
 // Human-readable filter recap for the letterhead
 $filterBits = [];
 if ($f_month !== '')    $filterBits[] = 'Month: ' . date('F Y', strtotime($f_month . '-01'));
@@ -352,11 +435,25 @@ $generatedAt = date('F j, Y g:i A');
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Admin Reports – DMW RO IV-A</title>
+    <script src="https://cdn.tailwindcss.com"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
     <link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700;9..40,800&family=DM+Serif+Display&display=swap" rel="stylesheet">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link rel="stylesheet" href="../css/dashboard.css">
     <link rel="icon" type="image/png" href="https://dmw.gov.ph/images/dmw_tahanan_ng_ofw_colored.png">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <style>
+        /* Same topbar-brand override used in dashboard.php */
+        .topbar-brand img {
+            width: 42px;
+            height: auto;
+            display: block;
+            background: transparent;
+            filter: none;
+        }
+    </style>
 
     <style>
         :root {
@@ -373,6 +470,21 @@ $generatedAt = date('F j, Y g:i A');
             --bdr: #e2e8f0;
             --surface: #ffffff;
             --surface2: #f8fafc;
+        }
+
+        .btn-red {
+            background: var(--red);
+            border-color: var(--red);
+            color: #fff;
+        }
+
+        .btn-red:hover {
+            filter: brightness(1.08);
+        }
+
+        .btn-red:disabled {
+            opacity: .6;
+            cursor: not-allowed;
         }
 
         * {
@@ -493,7 +605,7 @@ $generatedAt = date('F j, Y g:i A');
         .sheet {
             max-width: 1000px;
             margin: 20px auto;
-            padding: 0 16px 60px;
+            padding: 0 16px 110px;
         }
 
         .letterhead {
@@ -723,6 +835,83 @@ $generatedAt = date('F j, Y g:i A');
 
 <body>
 
+    <!-- ── TOP BAR (copied from dashboard.php) ─────────────────────── -->
+    <header class="topbar no-print">
+        <div class="topbar-brand">
+            <img src="https://dmw.gov.ph/images/dmw_tahanan_ng_ofw_colored.png" alt="DMW" class="h-9">
+            <div class="brand-divider"></div>
+            <div class="brand-text">
+                <h1>Department of Migrant Workers</h1>
+                <p>REGIONAL OFFICE IV-A &nbsp;-&nbsp; ADMIN PORTAL</p>
+            </div>
+        </div>
+        <div class="topbar-right">
+            <span class="topbar-date" id="live-date"></span>
+            <div class="tb-btn">
+                <i class="fas fa-bell"></i>
+                <span class="notif-dot"></span>
+            </div>
+            <div class="topbar-avatar"><?= htmlspecialchars($initials) ?></div>
+        </div>
+    </header>
+
+    <!-- ── SUBBAR (copied from dashboard.php, wired to try.php's own filters) ── -->
+    <div class="subbar no-print">
+        <div class="subbar-top">
+            <div class="subbar-greeting">
+                <h2><?= htmlspecialchars($greeting) ?>, <?= htmlspecialchars($admin_name) ?></h2>
+                <p>Filter the report below, then use the toolbar to print or export</p>
+            </div>
+        </div>
+        <form class="filter-scroll" method="GET" action="try.php">
+            <label class="filter-pill">
+                <i class="fas fa-calendar-alt" style="color:var(--blue-lt)"></i>
+                <select name="month" class="bg-transparent border-none outline-none font-semibold text-xs text-inherit cursor-pointer">
+                    <option value="">All Months</option>
+                    <?php
+                    for ($m = 1; $m <= 12; $m++) {
+                        $val = date('Y') . '-' . str_pad($m, 2, '0', STR_PAD_LEFT);
+                        $lbl = date('M Y', mktime(0, 0, 0, $m, 1, (int)date('Y')));
+                        $sel = ($val === $f_month) ? 'selected' : '';
+                        echo "<option value=\"$val\" $sel>$lbl</option>\n";
+                    }
+                    ?>
+                </select>
+            </label>
+            <label class="filter-pill">
+                <i class="fas fa-map-marker-alt" style="color:var(--ok,#10b981);font-size:10px"></i>
+                <select name="province" class="bg-transparent border-none outline-none font-semibold text-xs text-inherit cursor-pointer">
+                    <option value="">CALABARZON</option>
+                    <?php foreach (['Laguna', 'Batangas', 'Cavite', 'Rizal', 'Quezon'] as $prov): ?>
+                        <option value="<?= htmlspecialchars($prov) ?>" <?= $prov === $f_province ? 'selected' : '' ?>><?= htmlspecialchars($prov) ?></option>
+                    <?php endforeach; ?>
+                </select>
+            </label>
+            <label class="filter-pill">
+                <i class="fas fa-briefcase" style="color:var(--amber)"></i>
+                <select name="job_type" class="bg-transparent border-none outline-none font-semibold text-xs text-inherit cursor-pointer">
+                    <option value="">All Job Types</option>
+                    <?php foreach ($jobTypeOptions as $jt): ?>
+                        <option value="<?= htmlspecialchars($jt) ?>" <?= $jt === $f_jobtype ? 'selected' : '' ?>><?= htmlspecialchars($jt) ?></option>
+                    <?php endforeach; ?>
+                </select>
+            </label>
+            <label class="filter-pill">
+                <i class="fas fa-globe" style="color:var(--indigo)"></i>
+                <select name="country" class="bg-transparent border-none outline-none font-semibold text-xs text-inherit cursor-pointer">
+                    <option value="">All Destinations</option>
+                    <?php foreach ($countryOptions as $ctry): ?>
+                        <option value="<?= htmlspecialchars($ctry) ?>" <?= $ctry === $f_country ? 'selected' : '' ?>><?= htmlspecialchars($ctry) ?></option>
+                    <?php endforeach; ?>
+                </select>
+            </label>
+            <button type="submit" class="filter-pill" style="cursor:pointer;border:none">
+                <i class="fas fa-filter" style="color:var(--blue-lt)"></i>
+                <span style="font-weight:600;font-size:11px">Apply Filters</span>
+            </button>
+        </form>
+    </div>
+
     <!-- ── TOOLBAR ─────────────────────────────────────────────────── -->
     <div class="toolbar no-print">
         <div class="toolbar-title">
@@ -733,14 +922,16 @@ $generatedAt = date('F j, Y g:i A');
             <a href="dashboard.php" class="btn"><i class="fas fa-arrow-left"></i> Back to Dashboard</a>
             <button class="btn" onclick="printCurrent()"><i class="fas fa-print"></i> Print This Report</button>
             <button class="btn btn-green" onclick="exportCurrent()"><i class="fas fa-file-excel"></i> Export to Excel</button>
+            <button class="btn btn-red" onclick="downloadCurrentPDF(this)"><i class="fas fa-file-pdf"></i> Download PDF</button>
             <button class="btn btn-primary" onclick="printAll()"><i class="fas fa-print"></i> Print All Reports</button>
             <button class="btn btn-primary" onclick="exportAll()"><i class="fas fa-file-excel"></i> Export All (Excel)</button>
+            <button class="btn btn-red" onclick="downloadAllPDF(this)"><i class="fas fa-file-pdf"></i> Download All (PDF)</button>
         </div>
     </div>
 
     <!-- ── TABS ────────────────────────────────────────────────────── -->
     <div class="tabs no-print" id="tabs">
-        <button class="tab-btn active" data-target="rep-gender">Gender</button>
+        <!--<button class="tab-btn active" data-target="rep-gender">Gender</button>-->
         <button class="tab-btn" data-target="rep-country">Approved by Country</button>
         <button class="tab-btn" data-target="rep-status">Status Summary</button>
         <button class="tab-btn" data-target="rep-province">Origin (Province/City)</button>
@@ -748,6 +939,7 @@ $generatedAt = date('F j, Y g:i A');
         <button class="tab-btn" data-target="rep-edu">Educational Attainment</button>
         <button class="tab-btn" data-target="rep-jobs">Job Order Utilization</button>
         <button class="tab-btn" data-target="rep-evaluators">Evaluator Turnaround</button>
+        <button class="tab-btn" data-target="rep-doccompliance">Document Compliance</button>
     </div>
 
     <div class="sheet">
@@ -768,7 +960,7 @@ $generatedAt = date('F j, Y g:i A');
             </div>
         </div>
 
-        <!-- ══════════════════════════ REPORT 1: GENDER ══════════════════════════ -->
+        <!-- ══════════════════════════ REPORT 1: GENDER ══════════════════════════ 
         <section class="report-section active" id="rep-gender">
             <div class="report-card">
                 <h2><i class="fas fa-venus-mars" style="color:var(--indigo)"></i> Applicant Reports by Gender</h2>
@@ -854,7 +1046,7 @@ $generatedAt = date('F j, Y g:i A');
                     </tbody>
                 </table>
             </div>
-        </section>
+        </section>-->
 
         <!-- ══════════════════════════ REPORT 2: APPROVED BY COUNTRY ══════════════════════════ -->
         <section class="report-section" id="rep-country">
@@ -890,7 +1082,6 @@ $generatedAt = date('F j, Y g:i A');
                 <table class="report-table" id="tbl-country-detail">
                     <thead>
                         <tr>
-                            <th>App #</th>
                             <th>Applicant</th>
                             <th>Gender</th>
                             <th>Origin</th>
@@ -906,7 +1097,6 @@ $generatedAt = date('F j, Y g:i A');
                             </tr><?php endif; ?>
                         <?php foreach ($countryDetail as $r): ?>
                             <tr>
-                                <td>#<?= (int)$r['id'] ?></td>
                                 <td><?= htmlspecialchars(fullName($r)) ?></td>
                                 <td><?= htmlspecialchars($r['gender']) ?></td>
                                 <td><?= htmlspecialchars($r['city_municipality'] . ', ' . $r['province']) ?></td>
@@ -1124,6 +1314,63 @@ $generatedAt = date('F j, Y g:i A');
             </div>
         </section>
 
+        <!-- ══════════════════════════ REPORT 9: DOCUMENT COMPLIANCE ══════════════════════════ -->
+        <section class="report-section" id="rep-doccompliance">
+            <div class="report-card">
+                <h2><i class="fas fa-file-circle-check" style="color:var(--ok)"></i> Document Compliance Report</h2>
+                <p class="sub">Required vs. submitted documents per application, based on each job order's document requirements.</p>
+
+                <div class="tiles">
+                    <div class="tile">
+                        <div class="tv"><?= count($docCompliance) ?></div>
+                        <div class="tl">Applications Checked</div>
+                    </div>
+                    <div class="tile">
+                        <div class="tv" style="color:var(--ok)"><?= $docCompleteCount ?></div>
+                        <div class="tl">Fully Compliant</div>
+                    </div>
+                    <div class="tile">
+                        <div class="tv" style="color:var(--red)"><?= $docIncompleteCount ?></div>
+                        <div class="tl">Incomplete</div>
+                    </div>
+                    <div class="tile">
+                        <div class="tv"><?= $docAvgCompletion ?>%</div>
+                        <div class="tl">Avg. Completion</div>
+                    </div>
+                </div>
+
+                <table class="report-table" id="tbl-doccompliance">
+                    <thead>
+                        <tr>
+                            <th>Applicant</th>
+                            <th>RSF #</th>
+                            <th>Employer</th>
+                            <th>Required</th>
+                            <th>Submitted</th>
+                            <th>Completion</th>
+                            <th>Missing Documents</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php if (!$docCompliance): ?><tr class="empty-row">
+                                <td colspan="7">No applications found for the selected filters.</td>
+                            </tr><?php endif; ?>
+                        <?php foreach ($docCompliance as $d): ?>
+                            <tr>
+                                <td><?= htmlspecialchars(fullName($d)) ?></td>
+                                <td><?= htmlspecialchars($d['rsf_number']) ?></td>
+                                <td><?= htmlspecialchars($d['employer_name']) ?></td>
+                                <td><?= (int)$d['required_count'] ?></td>
+                                <td><?= (int)$d['submitted_count'] ?></td>
+                                <td><span class="badge <?= $d['completion_pct'] == 100 ? 'b-approved' : 'b-disapproved' ?>"><?= (int)$d['completion_pct'] ?>%</span></td>
+                                <td><?= htmlspecialchars($d['missing_documents']) ?></td>
+                            </tr>
+                        <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
         <p class="footer-note">DMW Regional Office IV-A — CALABARZON &nbsp;•&nbsp; Generated automatically from the Admin Dashboard &nbsp;•&nbsp; For official use only</p>
     </div>
 
@@ -1137,7 +1384,8 @@ $generatedAt = date('F j, Y g:i A');
             'rep-age': 'Applicants by Age Group',
             'rep-edu': 'Applicants by Educational Attainment',
             'rep-jobs': 'Job Order Slot Utilization',
-            'rep-evaluators': 'Evaluator Turnaround'
+            'rep-evaluators': 'Evaluator Turnaround',
+            'rep-doccompliance': 'Document Compliance Report'
         };
 
         /* ── Tab switching ───────────────────────────────────────── */
@@ -1205,16 +1453,112 @@ $generatedAt = date('F j, Y g:i A');
             XLSX.writeFile(wb, 'DMW_All_Reports.xlsx');
         }
 
+        /* ── PDF Download (html2canvas + jsPDF) ─────────────────── */
+        async function generatePdfFromSections(sections, filename) {
+            const {
+                jsPDF
+            } = window.jspdf;
+            const pdf = new jsPDF('p', 'pt', 'a4');
+            const pageWidth = pdf.internal.pageSize.getWidth();
+            const pageHeight = pdf.internal.pageSize.getHeight();
+            const margin = 24;
+            const usableWidth = pageWidth - margin * 2;
+            const usableHeight = pageHeight - margin * 2;
+            const letterhead = document.querySelector('.letterhead');
+
+            let firstPage = true;
+
+            for (const section of sections) {
+                const wasActive = section.classList.contains('active');
+                if (!wasActive) section.classList.add('active');
+
+                // Build an offscreen copy: letterhead + this report section
+                const wrapper = document.createElement('div');
+                wrapper.style.cssText = 'position:fixed;left:-99999px;top:0;background:#fff;';
+                wrapper.style.width = document.querySelector('.sheet').clientWidth + 'px';
+                wrapper.appendChild(letterhead.cloneNode(true));
+                wrapper.appendChild(section.cloneNode(true));
+                document.body.appendChild(wrapper);
+
+                const canvas = await html2canvas(wrapper, {
+                    scale: 2,
+                    useCORS: true,
+                    backgroundColor: '#ffffff'
+                });
+                document.body.removeChild(wrapper);
+                if (!wasActive) section.classList.remove('active');
+
+                const imgData = canvas.toDataURL('image/png');
+                const imgHeight = (canvas.height * usableWidth) / canvas.width;
+                let heightLeft = imgHeight;
+                let position = 0;
+
+                if (!firstPage) pdf.addPage();
+                firstPage = false;
+
+                pdf.addImage(imgData, 'PNG', margin, margin - position, usableWidth, imgHeight);
+                heightLeft -= usableHeight;
+
+                while (heightLeft > 0) {
+                    position += usableHeight;
+                    pdf.addPage();
+                    pdf.addImage(imgData, 'PNG', margin, margin - position, usableWidth, imgHeight);
+                    heightLeft -= usableHeight;
+                }
+            }
+
+            pdf.save(filename);
+        }
+
+        async function downloadCurrentPDF(btn) {
+            const original = btn.innerHTML;
+            btn.disabled = true;
+            btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Generating...';
+            try {
+                const id = activeSectionId();
+                await generatePdfFromSections([document.getElementById(id)], `${REPORT_TITLES[id].replace(/\s+/g,'_')}.pdf`);
+            } catch (err) {
+                console.error(err);
+                alert('Failed to generate PDF. Please try again.');
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = original;
+            }
+        }
+
+        async function downloadAllPDF(btn) {
+            const original = btn.innerHTML;
+            btn.disabled = true;
+            btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Generating...';
+            try {
+                const sections = Array.from(document.querySelectorAll('.report-section'));
+                await generatePdfFromSections(sections, 'DMW_All_Reports.pdf');
+            } catch (err) {
+                console.error(err);
+                alert('Failed to generate PDF. Please try again.');
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = original;
+            }
+        }
         /* ── Charts ──────────────────────────────────────────────── */
         const genderLabels = <?= json_encode(array_column($genderSummary, 'gender')) ?>;
         const genderData = <?= json_encode(array_map('intval', array_column($genderSummary, 'applicants'))) ?>;
+
+        const genderColorMap = {
+            'Male': '#3b82f6', // blue
+            'Female': '#ec4899', // pink
+            'Not Specified': '#94a3b8'
+        };
+        const genderColors = genderLabels.map(g => genderColorMap[g] || '#f59e0b'); // fallback for any other value
+
         new Chart(document.getElementById('chartGender'), {
             type: 'doughnut',
             data: {
                 labels: genderLabels,
                 datasets: [{
                     data: genderData,
-                    backgroundColor: ['#3b82f6', '#ec4899', '#94a3b8', '#f59e0b']
+                    backgroundColor: genderColors
                 }]
             },
             options: {
@@ -1260,8 +1604,248 @@ $generatedAt = date('F j, Y g:i A');
                 }
             }
         });
+
+        /* Wraps a native <select> with a compact styled trigger + dropdown
+           panel. The panel is appended to <body> and positioned `fixed`
+           (from the trigger's on-screen position) so it never stretches
+           .filter-scroll's horizontal scrollbar. The original <select>
+           stays in the DOM (hidden) with its `name` attribute intact, so
+           the surrounding <form method="GET" action="try.php"> still
+           submits exactly the same querystring as before — no other
+           changes needed. */
+        function enhancePillSelect(select) {
+            if (!select) return;
+
+            const wrapper = document.createElement('div');
+            wrapper.className = 'relative inline-flex items-center';
+            select.parentNode.insertBefore(wrapper, select);
+            wrapper.appendChild(select);
+            select.classList.add('hidden');
+            select.tabIndex = -1;
+
+            const trigger = document.createElement('button');
+            trigger.type = 'button';
+            trigger.setAttribute('aria-haspopup', 'listbox');
+            trigger.setAttribute('aria-expanded', 'false');
+            trigger.className = 'inline-flex items-center gap-1.5 bg-transparent border-none cursor-pointer p-0 m-0 font-inherit text-inherit';
+            trigger.innerHTML = '<span class="truncate max-w-[110px]"></span>' +
+                '<i class="fas fa-chevron-down text-[9px] opacity-60 transition-transform flex-shrink-0"></i>';
+            wrapper.appendChild(trigger);
+
+            const panel = document.createElement('div');
+            panel.setAttribute('role', 'listbox');
+            panel.style.cssText = 'position:fixed;background:var(--surface);border:1.5px solid var(--bdr);border-radius:8px;box-shadow:0 10px 30px rgba(11,31,75,.16);z-index:999;overflow:hidden;padding:4px 0;max-height:240px;overflow-y:auto;width:224px;';
+            panel.classList.add('hidden');
+            document.body.appendChild(panel);
+
+            function buildRow(optionEl) {
+                const row = document.createElement('div');
+                row.setAttribute('role', 'option');
+                row.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:8px;padding:7px 12px;font-size:12px;color:var(--text1);cursor:pointer;';
+                row.dataset.value = optionEl.value;
+                row.addEventListener('mouseenter', () => row.style.background = 'var(--surface2)');
+                row.addEventListener('mouseleave', () => row.style.background = row.dataset.selected === '1' ? '#eff6ff' : '');
+                const label = document.createElement('span');
+                label.style.cssText = 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+                label.textContent = optionEl.textContent;
+                row.appendChild(label);
+                row.addEventListener('click', () => {
+                    select.value = optionEl.value;
+                    closePanel();
+                    refresh();
+                    select.dispatchEvent(new Event('change', {
+                        bubbles: true
+                    }));
+                });
+                return row;
+            }
+
+            function renderList() {
+                panel.innerHTML = '';
+                Array.from(select.options).forEach(opt => panel.appendChild(buildRow(opt)));
+                markSelected();
+            }
+
+            function markSelected() {
+                panel.querySelectorAll('[role="option"]').forEach(row => {
+                    const selected = row.dataset.value === select.value;
+                    row.dataset.selected = selected ? '1' : '0';
+                    row.style.background = selected ? '#eff6ff' : '';
+                    row.style.color = selected ? 'var(--blue)' : 'var(--text1)';
+                    row.style.fontWeight = selected ? '700' : '400';
+                    let check = row.querySelector('.fa-check');
+                    if (selected && !check) {
+                        const icon = document.createElement('i');
+                        icon.className = 'fas fa-check';
+                        icon.style.cssText = 'font-size:10px;color:var(--blue-lt);flex-shrink:0;';
+                        row.appendChild(icon);
+                    } else if (!selected && check) {
+                        check.remove();
+                    }
+                });
+            }
+
+            function refresh() {
+                const opt = select.options[select.selectedIndex];
+                trigger.querySelector('span').textContent = opt ? opt.textContent : '';
+                markSelected();
+            }
+
+            function positionPanel() {
+                const rect = trigger.getBoundingClientRect();
+                const panelWidth = 224;
+                let left = rect.left;
+                const maxLeft = window.innerWidth - panelWidth - 8;
+                if (left > maxLeft) left = Math.max(8, maxLeft);
+                panel.style.top = (rect.bottom + 6) + 'px';
+                panel.style.left = left + 'px';
+            }
+
+            function onReposition() {
+                if (!panel.classList.contains('hidden')) positionPanel();
+            }
+
+            function openPanel() {
+                document.querySelectorAll('[role="listbox"]').forEach(p => {
+                    if (p !== panel) p.classList.add('hidden');
+                });
+                renderList();
+                positionPanel();
+                panel.classList.remove('hidden');
+                trigger.setAttribute('aria-expanded', 'true');
+                trigger.querySelector('.fa-chevron-down').classList.add('rotate-180');
+                window.addEventListener('scroll', onReposition, true);
+                window.addEventListener('resize', onReposition);
+            }
+
+            function closePanel() {
+                panel.classList.add('hidden');
+                trigger.setAttribute('aria-expanded', 'false');
+                trigger.querySelector('.fa-chevron-down').classList.remove('rotate-180');
+                window.removeEventListener('scroll', onReposition, true);
+                window.removeEventListener('resize', onReposition);
+            }
+
+            trigger.addEventListener('click', (e) => {
+                e.stopPropagation();
+                panel.classList.contains('hidden') ? openPanel() : closePanel();
+            });
+            trigger.addEventListener('keydown', (e) => {
+                if (['Enter', ' ', 'ArrowDown'].includes(e.key)) {
+                    e.preventDefault();
+                    openPanel();
+                }
+            });
+            panel.addEventListener('keydown', (e) => {
+                if (e.key === 'Escape') {
+                    closePanel();
+                    trigger.focus();
+                }
+            });
+            panel.addEventListener('click', (e) => e.stopPropagation());
+            document.addEventListener('click', closePanel);
+
+            refresh();
+        }
+
+        // Every <select> inside the filter form gets the same treatment —
+        // month, province, job_type, country (identified by name, not id,
+        // in this file, so we just grab all of them).
+        document.querySelectorAll('.filter-scroll select').forEach(enhancePillSelect);
+
+        /* ── Dock flyout (copied from dashboard.php) ────────────────── */
+        function toggleFlyout(e, id) {
+            e.stopPropagation();
+            const el = document.getElementById(id);
+            const wasOpen = el.classList.contains('open');
+            document.querySelectorAll('.flyout').forEach(f => f.classList.remove('open'));
+            if (!wasOpen) el.classList.add('open');
+        }
+        document.addEventListener('click', () => {
+            document.querySelectorAll('.flyout').forEach(f => f.classList.remove('open'));
+        });
+
+        /* ── Live date + time ────────────────────────────────────────────── */
+        function updateLiveDateTime() {
+            const el = document.getElementById('live-date');
+            if (!el) return;
+
+            const now = new Date();
+
+            const datePart = now.toLocaleDateString('en-PH', {
+                weekday: 'short',
+                year: 'numeric',
+                month: 'short',
+                day: 'numeric'
+            }).toUpperCase();
+
+            const timePart = now.toLocaleTimeString('en-PH', {
+                hour: 'numeric',
+                minute: '2-digit',
+                second: '2-digit',
+                hour12: true
+            }).toLowerCase();
+
+            el.textContent = `${datePart} | ${timePart}`;
+        }
+
+        updateLiveDateTime();
+        setInterval(updateLiveDateTime, 1000); // refresh every second
     </script>
 
+    <!-- ── FLOATING DOCK (copied from dashboard.php) ────────────────── -->
+    <div class="dock-wrap no-print">
+        <nav class="dock">
+            <a href="dashboard.php" class="dk" data-tip="Dashboard">
+                <i class="fas fa-house"></i>
+                <span class="dk-lbl">Home</span>
+            </a>
+            <div class="dk" id="appsBtn" data-tip="Applications" onclick="toggleFlyout(event,'appsMenu')">
+                <span class="dk-badge"><?= (int) $active_apps ?></span>
+                <i class="fas fa-file-lines"></i>
+                <span class="dk-lbl">Apps</span>
+                <div class="flyout" id="appsMenu">
+                    <div class="flyout-arr"></div>
+                    <a href="applications.php" class="fi"><i class="fas fa-list" style="color:#60a5fa"></i>All Applications</a>
+                    <a href="applications.php?status=pending" class="fi"><i class="fas fa-clock" style="color:#fbbf24"></i>Pending</a>
+                    <a href="applications.php?status=unassign" class="fi"><i class="fas fa-user-slash" style="color:#f87171"></i>Unassign</a>
+                    <a href="applications.php?status=assign" class="fi"><i class="fas fa-user-check" style="color:#60a5fa"></i>Assign</a>
+                    <a href="applications.php?status=under_evaluation" class="fi"><i class="fas fa-search" style="color:#a78bfa"></i>Under Evaluation</a>
+                    <a href="applications.php?status=for_compliance" class="fi"><i class="fas fa-triangle-exclamation" style="color:#fb923c"></i>For Compliance</a>
+                    <a href="applications.php?status=approved" class="fi"><i class="fas fa-check-circle" style="color:#34d399"></i>Approved</a>
+                    <a href="applications.php?status=disapproved" class="fi"><i class="fas fa-times-circle" style="color:#f87171"></i>Disapproved</a>
+                </div>
+            </div>
+            <div class="dk-div"></div>
+            <a href="job-orders.php" class="dk" data-tip="Job Orders">
+                <i class="fas fa-briefcase"></i>
+                <span class="dk-lbl">RSF</span>
+            </a>
+            <a href="try.php" class="dk active" data-tip="Reports">
+                <i class="fas fa-chart-bar"></i>
+                <span class="dk-lbl">Reports</span>
+            </a>
+            <a href="analytics.php" class="dk">
+                <i class="fas fa-chart-bar text-blue-300 text-base leading-none"></i>
+                <span class="dk-lbl">Analytics</span>
+            </a>
+            <a href="user.php" class="dk" data-tip="Evaluators">
+                <i class="fas fa-users-gear"></i>
+                <span class="dk-lbl">Evaluators</span>
+            </a>
+            <div class="dk-div"></div>
+            <a href="settings.html" class="dk" data-tip="Settings">
+                <i class="fas fa-gear"></i>
+                <span class="dk-lbl">Settings</span>
+            </a>
+            <div class="dk" data-tip="Logout" onclick="logout('Admin')">
+                <i class="fas fa-arrow-right-from-bracket" style="color:#f87171"></i>
+                <span class="dk-lbl" style="color:#f87171">Logout</span>
+            </div>
+        </nav>
+    </div>
+
+    <script type="module" src="../js/main.js"></script>
 </body>
 
 </html>

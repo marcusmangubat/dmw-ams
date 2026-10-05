@@ -44,6 +44,7 @@ $stats = [
     'under_evaluation' => 0,
     'for_compliance'   => 0,
     'approved'         => 0,
+    'disapproved'      => 0,
     'resubmitted'      => 0,
     'total'            => 0,
 ];
@@ -101,7 +102,9 @@ if ($evaluator_id) {
             r.rsf_number, 
             r.position_title, 
             r.worksite_country AS country,
-            COALESCE(CONCAT(c.first_name, ' ', c.last_name), 'Unknown Applicant') AS applicant_name
+            COALESCE(CONCAT(c.first_name, ' ', c.last_name), 'Unknown Applicant') AS applicant_name,
+            c.profile_picture AS applicant_picture,
+            c.province AS applicant_province
         FROM applications a
         INNER JOIN rsf_job_orders    r  ON a.rsf_id           = r.id
         LEFT  JOIN clients           c  ON a.client_id        = c.cid
@@ -115,6 +118,66 @@ if ($evaluator_id) {
     $stmt->close();
 }
 
+// ────────────────────────────────────────────────
+// Filter dropdown sources — scoped ONLY to job types/destinations/provinces
+// this evaluator actually has applications for (via current_evaluator_id),
+// never the full system-wide list of RSF job orders or all client provinces.
+// ────────────────────────────────────────────────
+$evaluator_job_types = [];
+$evaluator_countries = [];
+$evaluator_provinces = [];
+
+if ($evaluator_id) {
+    $stmt_jt = $database->prepare("
+        SELECT DISTINCT r.position_title
+        FROM applications a
+        INNER JOIN rsf_job_orders r ON a.rsf_id = r.id
+        WHERE a.current_evaluator_id = ?
+          AND r.position_title IS NOT NULL AND r.position_title <> ''
+        ORDER BY r.position_title ASC
+    ");
+    $stmt_jt->bind_param("i", $evaluator_id);
+    $stmt_jt->execute();
+    $res_jt = $stmt_jt->get_result();
+    while ($row = $res_jt->fetch_assoc()) {
+        $evaluator_job_types[] = $row['position_title'];
+    }
+    $stmt_jt->close();
+
+    $stmt_ct = $database->prepare("
+        SELECT DISTINCT r.worksite_country
+        FROM applications a
+        INNER JOIN rsf_job_orders r ON a.rsf_id = r.id
+        WHERE a.current_evaluator_id = ?
+          AND r.worksite_country IS NOT NULL AND r.worksite_country <> ''
+        ORDER BY r.worksite_country ASC
+    ");
+    $stmt_ct->bind_param("i", $evaluator_id);
+    $stmt_ct->execute();
+    $res_ct = $stmt_ct->get_result();
+    while ($row = $res_ct->fetch_assoc()) {
+        $evaluator_countries[] = $row['worksite_country'];
+    }
+    $stmt_ct->close();
+
+    // Province comes from the applicant (clients.province), scoped to
+    // only the applications currently assigned to this evaluator.
+    $stmt_pv = $database->prepare("
+        SELECT DISTINCT c.province
+        FROM applications a
+        INNER JOIN clients c ON a.client_id = c.cid
+        WHERE a.current_evaluator_id = ?
+          AND c.province IS NOT NULL AND c.province <> ''
+        ORDER BY c.province ASC
+    ");
+    $stmt_pv->bind_param("i", $evaluator_id);
+    $stmt_pv->execute();
+    $res_pv = $stmt_pv->get_result();
+    while ($row = $res_pv->fetch_assoc()) {
+        $evaluator_provinces[] = $row['province'];
+    }
+    $stmt_pv->close();
+}
 // ────────────────────────────────────────────────
 // Count active assignments
 // ────────────────────────────────────────────────
@@ -131,6 +194,48 @@ if ($evaluator_id) {
     $stmt_cnt->execute();
     $my_assigned_count = (int)$stmt_cnt->get_result()->fetch_assoc()['cnt'];
     $stmt_cnt->close();
+}
+
+// ────────────────────────────────────────────────
+// Applications by Country (all reviewed vs approved, per worksite country)
+// ────────────────────────────────────────────────
+$country_data = [];
+
+if ($evaluator_id) {
+    $stmt_country = $database->prepare("
+        SELECT
+            r.worksite_country AS country,
+            COUNT(DISTINCT a.id) as total_reviewed,
+            COUNT(CASE WHEN e.decision = 'approved' THEN 1 END) as approved
+        FROM applications a
+        JOIN rsf_job_orders r ON a.rsf_id = r.id
+        LEFT JOIN evaluations e ON e.application_id = a.id AND e.evaluator_id = ?
+        WHERE a.current_evaluator_id = ?
+        GROUP BY r.worksite_country
+        ORDER BY total_reviewed DESC
+        LIMIT 6
+    ");
+    $stmt_country->bind_param("ii", $evaluator_id, $evaluator_id);
+    $stmt_country->execute();
+    $result_country = $stmt_country->get_result();
+    while ($row = $result_country->fetch_assoc()) {
+        $country_data[] = [
+            'country'  => $row['country'],
+            'total'    => (int)$row['total_reviewed'],
+            'approved' => (int)$row['approved'],
+        ];
+    }
+    $stmt_country->close();
+}
+
+// Fallback sample data so the chart never renders empty
+if (empty($country_data)) {
+    $country_data = [
+        ['country' => 'Taiwan',    'total' => 12, 'approved' => 8],
+        ['country' => 'Japan',     'total' => 9,  'approved' => 5],
+        ['country' => 'Germany',   'total' => 6,  'approved' => 4],
+        ['country' => 'Singapore', 'total' => 5,  'approved' => 2],
+    ];
 }
 
 // Greeting
@@ -177,6 +282,7 @@ function pill_classes(string $status): string
 
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
     <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 
     <!--
         dashboard.css is kept ONLY because the topbar, subbar and floating
@@ -241,7 +347,7 @@ function pill_classes(string $status): string
                 <i class="fas fa-bell"></i>
                 <span class="notif-dot"></span>
             </div>
-            <div class="tb-btn"><i class="fas fa-magnifying-glass"></i></div>
+            <!-- <div class="tb-btn"><i class="fas fa-magnifying-glass"></i></div>-->
             <div class="topbar-avatar"><?= htmlspecialchars($initials) ?></div>
         </div>
     </header>
@@ -256,12 +362,59 @@ function pill_classes(string $status): string
                 <p>(<?= number_format($available_count) ?>) Pending Applications</p>
             </div>
         </div>
+
+        <!-- Filter pills — options are pulled ONLY from job types/destinations/
+             provinces this evaluator is currently assigned to
+             (current_evaluator_id), so an evaluator never sees job types,
+             countries, or provinces they don't handle. -->
+        <div class="filter-scroll">
+            <label class="filter-pill">
+                <i class="fas fa-calendar-alt" style="color:var(--blue-lt)"></i>
+                <select id="filter-month">
+                    <option value="">All Time</option>
+                    <?php
+                    for ($m = 1; $m <= 12; $m++) {
+                        $val = date('Y') . '-' . str_pad($m, 2, '0', STR_PAD_LEFT);
+                        $lbl = date('M Y', mktime(0, 0, 0, $m, 1, (int)date('Y')));
+                        echo "<option value=\"$val\">$lbl</option>\n";
+                    }
+                    ?>
+                </select>
+            </label>
+            <label class="filter-pill">
+                <i class="fas fa-map-marker-alt" style="color:var(--ok,#10b981);font-size:10px"></i>
+                <select id="filter-province">
+                    <option value="">CALABARZON</option>
+                    <?php foreach ($evaluator_provinces as $pv): ?>
+                        <option value="<?= htmlspecialchars($pv, ENT_QUOTES) ?>"><?= htmlspecialchars($pv) ?></option>
+                    <?php endforeach; ?>
+                </select>
+            </label>
+            <label class="filter-pill">
+                <i class="fas fa-briefcase" style="color:var(--amber)"></i>
+                <select id="filter-job">
+                    <option value="">All Job Types</option>
+                    <?php foreach ($evaluator_job_types as $jt): ?>
+                        <option value="<?= htmlspecialchars($jt, ENT_QUOTES) ?>"><?= htmlspecialchars($jt) ?></option>
+                    <?php endforeach; ?>
+                </select>
+            </label>
+            <label class="filter-pill">
+                <i class="fas fa-globe" style="color:var(--indigo)"></i>
+                <select id="filter-country">
+                    <option value="">All Destinations</option>
+                    <?php foreach ($evaluator_countries as $c): ?>
+                        <option value="<?= htmlspecialchars($c, ENT_QUOTES) ?>"><?= htmlspecialchars($c) ?></option>
+                    <?php endforeach; ?>
+                </select>
+            </label>
+        </div>
     </div>
 
     <!-- ══════════════════════════════════════════
          MAIN CONTENT — rebuilt with Tailwind
     ══════════════════════════════════════════ -->
-    <div class="max-w-6xl mx-auto px-4 pt-3 pb-28">
+    <div class="max-w-[1400px] mx-auto px-4 pt-3 pb-28">
 
 
         <!-- KPI Stats -->
@@ -378,7 +531,7 @@ function pill_classes(string $status): string
                     </a>
                 </div>
 
-                <div class="flex flex-col">
+                <div class="flex flex-col max-h-[280px] overflow-y-auto pr-0.5 [scrollbar-width:thin]" id="my-applications-list">
                     <?php if (empty($my_applications)): ?>
                         <div class="py-10 px-4 text-center">
                             <i class="fas fa-inbox text-3xl text-slate-200 block mb-2.5"></i>
@@ -397,10 +550,19 @@ function pill_classes(string $status): string
                                 ? substr($np[0], 0, 1) . substr(end($np), 0, 1)
                                 : substr($app['applicant_name'], 0, 2));
                             ?>
+                            <?php
+                            $app_has_pic = !empty($app['applicant_picture']);
+                            $app_pic_url = $app_has_pic ? '../' . $app['applicant_picture'] : null;
+                            ?>
                             <a href="view-application.php?id=<?= (int)$app['id'] ?>"
+                                data-job="<?= htmlspecialchars($app['position_title'] ?? '', ENT_QUOTES) ?>"
+                                data-country="<?= htmlspecialchars($app['country'] ?? '', ENT_QUOTES) ?>"
+                                data-month="<?= $app['updated_at'] ? htmlspecialchars(date('Y-m', strtotime($app['updated_at'])), ENT_QUOTES) : '' ?>"
+                                data-province="<?= htmlspecialchars($app['applicant_province'] ?? '', ENT_QUOTES) ?>"
                                 class="flex items-center gap-2.5 py-2.5 px-1 border-b border-slate-100 last:border-0 rounded-xl no-underline text-inherit transition-colors duration-150 hover:bg-slate-50">
-                                <div class="w-9 h-9 shrink-0 rounded-[10px] bg-indigo-50 text-indigo-600 text-[10.5px] font-extrabold tracking-wide flex items-center justify-center">
-                                    <?= htmlspecialchars($avi) ?>
+                                <div class="w-9 h-9 shrink-0 rounded-[10px] bg-indigo-50 text-indigo-600 text-[10.5px] font-extrabold tracking-wide flex items-center justify-center"
+                                    <?= $app_has_pic ? "style=\"background-image:url('" . htmlspecialchars($app_pic_url) . "');background-size:cover;background-position:center;\"" : '' ?>>
+                                    <?= $app_has_pic ? '' : htmlspecialchars($avi) ?>
                                 </div>
                                 <div class="flex-1 min-w-0">
                                     <div class="text-[12.5px] font-bold text-slate-800 truncate"><?= htmlspecialchars($app['applicant_name']) ?></div>
@@ -424,41 +586,40 @@ function pill_classes(string $status): string
                 </div>
 
             </div><!-- /My Assigned Applications -->
-
-            <!-- Status Breakdown -->
-            <div class="bg-white border border-slate-200 rounded-2xl p-4 shadow-sm">
+            <!-- Applications by Country -->
+            <div class="grid grid-cols-1 gap-4 mt-4 fade-in" style="animation-delay:.25s">
+                <div class="bg-white border border-slate-200 rounded-2xl p-4 shadow-sm">
+                    <div class="flex items-center justify-between mb-3">
+                        <span class="flex items-center gap-2 text-[13px] font-extrabold text-slate-700">
+                            <span class="w-2 h-2 rounded-full bg-blue-400"></span>
+                            Applications by Country
+                        </span>
+                    </div>
+                    <div class="relative w-full" style="height:260px">
+                        <canvas id="countryChart"></canvas>
+                    </div>
+                </div><!-- /Applications by Country -->
+            </div><!-- /grid -->
+            <!-- Application Status -->
+            <div class="w-full sm:w-1/2 bg-white border border-slate-200 rounded-2xl p-4 shadow-sm">
                 <div class="flex items-center justify-between mb-3">
                     <span class="flex items-center gap-2 text-[13px] font-extrabold text-slate-700">
                         <span class="w-2 h-2 rounded-full bg-indigo-600"></span>
-                        Status Breakdown
+                        Application Status
                     </span>
                 </div>
 
-                <?php
-                $breakdown = [
-                    ['label' => 'Assign',           'key' => 'assign',           'dot' => '#3b82f6'],
-                    ['label' => 'Under Evaluation', 'key' => 'under_evaluation', 'dot' => '#4f46e5'],
-                    ['label' => 'For Compliance',    'key' => 'for_compliance',   'dot' => '#d97706'],
-                    ['label' => 'Resubmitted',       'key' => 'resubmitted',      'dot' => '#ca8a04'],
-                    ['label' => 'Approved',          'key' => 'approved',         'dot' => '#059669'],
-                ];
-                $total = max($stats['total'], 1);
-                foreach ($breakdown as $b):
-                    $pct = round(($stats[$b['key']] / $total) * 100);
-                ?>
-                    <div class="flex items-center gap-2 py-2">
-                        <span class="w-2 h-2 rounded-full shrink-0" style="background:<?= $b['dot'] ?>"></span>
-                        <span class="text-[11px] font-semibold text-slate-600 w-[92px] shrink-0 truncate"><?= $b['label'] ?></span>
-                        <span class="text-[11px] font-bold w-7 text-right shrink-0" style="color:<?= $b['dot'] ?>"><?= number_format($stats[$b['key']]) ?></span>
-                        <div class="flex-1 h-1.5 bg-slate-100 rounded-full overflow-hidden">
-                            <div class="h-full rounded-full transition-all duration-500" style="width:<?= $pct ?>%;background:<?= $b['dot'] ?>"></div>
-                        </div>
-                    </div>
-                <?php endforeach; ?>
+                <div id="status-bars" class="flex flex-col gap-3 mb-4"></div>
 
-            </div><!-- /Status Breakdown -->
+                <div class="flex items-center gap-4 pt-4 border-t border-slate-100">
+                    <div class="shrink-0"><canvas id="statusChart" width="120" height="120"></canvas></div>
+                    <div id="status-legend" class="flex-1"></div>
+                </div>
+            </div><!-- /Application Status -->
 
         </div><!-- /grid -->
+
+
 
     </div><!-- /main -->
 
@@ -510,14 +671,377 @@ function pill_classes(string $status): string
     </div>
 
     <script>
-        document.getElementById('live-date').textContent =
-            new Date().toLocaleDateString('en-PH', {
+        /* ── Live date + time ────────────────────────────────────────────── */
+        function updateLiveDateTime() {
+            const el = document.getElementById('live-date');
+            if (!el) return;
+
+            const now = new Date();
+
+            const datePart = now.toLocaleDateString('en-PH', {
                 weekday: 'short',
                 year: 'numeric',
                 month: 'short',
                 day: 'numeric'
             }).toUpperCase();
+
+            const timePart = now.toLocaleTimeString('en-PH', {
+                hour: 'numeric',
+                minute: '2-digit',
+                second: '2-digit',
+                hour12: true
+            }).toLowerCase();
+
+            el.textContent = `${datePart} | ${timePart}`;
+        }
+
+        updateLiveDateTime();
+        setInterval(updateLiveDateTime, 1000); // refresh every second
     </script>
+    <!-- Filter pills: month / province / job type / destination — client-side
+         filter of "My Assigned Applications" list only, scoped to this
+         evaluator's own data (options were already restricted server-side above). -->
+    <script>
+        (function() {
+            function enhancePillSelect(select) {
+                if (!select) return;
+
+                const wrapper = document.createElement('div');
+                wrapper.className = 'relative inline-flex items-center';
+                select.parentNode.insertBefore(wrapper, select);
+                wrapper.appendChild(select);
+                select.classList.add('hidden');
+                select.tabIndex = -1;
+
+                const trigger = document.createElement('button');
+                trigger.type = 'button';
+                trigger.setAttribute('aria-haspopup', 'listbox');
+                trigger.setAttribute('aria-expanded', 'false');
+                trigger.className = 'inline-flex items-center gap-1.5 bg-transparent border-none cursor-pointer p-0 m-0 font-inherit text-inherit';
+                trigger.innerHTML = '<span class="truncate max-w-[110px]"></span>' +
+                    '<i class="fas fa-chevron-down text-[9px] opacity-60 transition-transform flex-shrink-0"></i>';
+                wrapper.appendChild(trigger);
+
+                const panel = document.createElement('div');
+                panel.setAttribute('role', 'listbox');
+                panel.className = 'hidden fixed w-56 bg-white border-[1.5px] border-[var(--border)] rounded-lg shadow-[0_10px_30px_rgba(11,31,75,.16)] z-[999] overflow-hidden py-1 max-h-[240px] overflow-y-auto';
+                document.body.appendChild(panel); // appended to body — not clipped/stretched by .filter-scroll
+
+                function buildRow(optionEl) {
+                    const row = document.createElement('div');
+                    row.setAttribute('role', 'option');
+                    row.className = 'flex items-center justify-between gap-2 py-[7px] px-3 text-[12px] text-[var(--text1)] cursor-pointer hover:bg-[#f1f5fb] transition-colors';
+                    row.dataset.value = optionEl.value;
+                    const label = document.createElement('span');
+                    label.className = 'truncate';
+                    label.textContent = optionEl.textContent;
+                    row.appendChild(label);
+                    row.addEventListener('click', () => {
+                        select.value = optionEl.value;
+                        closePanel();
+                        refresh();
+                        select.dispatchEvent(new Event('change', {
+                            bubbles: true
+                        }));
+                    });
+                    return row;
+                }
+
+                function renderList() {
+                    panel.innerHTML = '';
+                    Array.from(select.options).forEach(opt => panel.appendChild(buildRow(opt)));
+                    markSelected();
+                }
+
+                function markSelected() {
+                    panel.querySelectorAll('[role="option"]').forEach(row => {
+                        const selected = row.dataset.value === select.value;
+                        row.classList.toggle('bg-[#eff6ff]', selected);
+                        row.classList.toggle('text-[var(--navy)]', selected);
+                        row.classList.toggle('font-bold', selected);
+                        let check = row.querySelector('.fa-check');
+                        if (selected && !check) {
+                            const icon = document.createElement('i');
+                            icon.className = 'fas fa-check text-[10px] text-[var(--blue)] flex-shrink-0';
+                            row.appendChild(icon);
+                        } else if (!selected && check) {
+                            check.remove();
+                        }
+                    });
+                }
+
+                function refresh() {
+                    const opt = select.options[select.selectedIndex];
+                    trigger.querySelector('span').textContent = opt ? opt.textContent : '';
+                    markSelected();
+                }
+
+                function positionPanel() {
+                    const rect = trigger.getBoundingClientRect();
+                    const panelWidth = 224; // matches w-56
+                    let left = rect.left;
+                    const maxLeft = window.innerWidth - panelWidth - 8;
+                    if (left > maxLeft) left = Math.max(8, maxLeft);
+                    panel.style.top = (rect.bottom + 6) + 'px';
+                    panel.style.left = left + 'px';
+                }
+
+                function onReposition() {
+                    if (!panel.classList.contains('hidden')) positionPanel();
+                }
+
+                function openPanel() {
+                    document.querySelectorAll('[role="listbox"]').forEach(p => {
+                        if (p !== panel) p.classList.add('hidden');
+                    });
+                    renderList();
+                    positionPanel();
+                    panel.classList.remove('hidden');
+                    trigger.setAttribute('aria-expanded', 'true');
+                    trigger.querySelector('.fa-chevron-down').classList.add('rotate-180');
+                    window.addEventListener('scroll', onReposition, true);
+                    window.addEventListener('resize', onReposition);
+                }
+
+                function closePanel() {
+                    panel.classList.add('hidden');
+                    trigger.setAttribute('aria-expanded', 'false');
+                    trigger.querySelector('.fa-chevron-down').classList.remove('rotate-180');
+                    window.removeEventListener('scroll', onReposition, true);
+                    window.removeEventListener('resize', onReposition);
+                }
+
+                trigger.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    panel.classList.contains('hidden') ? openPanel() : closePanel();
+                });
+                trigger.addEventListener('keydown', (e) => {
+                    if (['Enter', ' ', 'ArrowDown'].includes(e.key)) {
+                        e.preventDefault();
+                        openPanel();
+                    }
+                });
+                panel.addEventListener('keydown', (e) => {
+                    if (e.key === 'Escape') {
+                        closePanel();
+                        trigger.focus();
+                    }
+                });
+                panel.addEventListener('click', (e) => e.stopPropagation());
+                document.addEventListener('click', closePanel);
+
+                refresh();
+            }
+
+            const monthSel = document.getElementById('filter-month');
+            const provinceSel = document.getElementById('filter-province');
+            const jobSel = document.getElementById('filter-job');
+            const countrySel = document.getElementById('filter-country');
+
+            [monthSel, provinceSel, jobSel, countrySel].forEach(enhancePillSelect);
+
+            const list = document.getElementById('my-applications-list');
+            if (!list) return;
+
+            const rows = Array.from(list.querySelectorAll('a[data-job]'));
+
+            function applyEvaluatorFilters() {
+                const month = monthSel ? monthSel.value : '';
+                const province = provinceSel ? provinceSel.value : '';
+                const job = jobSel ? jobSel.value : '';
+                const country = countrySel ? countrySel.value : '';
+                let visibleCount = 0;
+
+                rows.forEach(row => {
+                    const matchesMonth = !month || row.dataset.month === month;
+                    const matchesProvince = !province || row.dataset.province === province;
+                    const matchesJob = !job || row.dataset.job === job;
+                    const matchesCountry = !country || row.dataset.country === country;
+                    const show = matchesMonth && matchesProvince && matchesJob && matchesCountry;
+                    row.style.display = show ? '' : 'none';
+                    if (show) visibleCount++;
+                });
+
+                let emptyState = document.getElementById('no-filtered-results');
+                if (visibleCount === 0) {
+                    if (!emptyState) {
+                        emptyState = document.createElement('div');
+                        emptyState.id = 'no-filtered-results';
+                        emptyState.className = 'py-10 px-4 text-center';
+                        emptyState.innerHTML = `
+                            <i class="fas fa-filter-circle-xmark text-3xl text-slate-200 block mb-2.5"></i>
+                            <p class="text-[12.5px] font-semibold text-slate-400">No assigned applications match this filter</p>
+                            <span class="text-[11px] text-slate-400/80">Try a different month, province, job type, or destination.</span>
+                        `;
+                        list.appendChild(emptyState);
+                    }
+                    emptyState.style.display = '';
+                } else if (emptyState) {
+                    emptyState.style.display = 'none';
+                }
+            }
+
+            if (monthSel) monthSel.addEventListener('change', applyEvaluatorFilters);
+            if (provinceSel) provinceSel.addEventListener('change', applyEvaluatorFilters);
+            if (jobSel) jobSel.addEventListener('change', applyEvaluatorFilters);
+            if (countrySel) countrySel.addEventListener('change', applyEvaluatorFilters);
+        })();
+    </script>
+
+    <!-- Dashboard charts: Application Status + Applications by Country -->
+    <script>
+        Chart.defaults.font.family = "'DM Sans', sans-serif";
+        Chart.defaults.color = '#64748b';
+
+        // Application Status (doughnut)
+        // Application Status — bars + donut + circular-dot legend, matching the reference style
+        (function() {
+            const statusLabels = ['Assign', 'Under Eval', 'For Compliance', 'Approved', 'Disapproved'];
+            const statusData = [
+                <?= (int)$stats['assign'] ?>,
+                <?= (int)$stats['under_evaluation'] ?>,
+                <?= (int)$stats['for_compliance'] ?>,
+                <?= (int)$stats['approved'] ?>,
+                <?= (int)$stats['disapproved'] ?>
+            ];
+            const statusColors = ['#3b82f6', '#4f46e5', '#d97706', '#059669', '#dc2626'];
+
+            // ── Bars ──
+            const barsEl = document.getElementById('status-bars');
+            const maxVal = Math.max(...statusData, 1);
+            const total = statusData.reduce((a, b) => a + b, 0);
+
+            barsEl.innerHTML = '';
+            statusLabels.forEach((label, i) => {
+                if (statusData[i] === 0) return; // skip empty statuses, same behavior as before
+                barsEl.innerHTML += `
+            <div class="flex items-center gap-3">
+                <span class="text-[12.5px] font-bold text-slate-700 w-[110px] shrink-0 truncate">${label}</span>
+                <div class="flex-1 h-[10px] bg-slate-100 rounded-full overflow-hidden">
+                    <div class="h-full rounded-full transition-all" style="width:${Math.round(statusData[i]/maxVal*100)}%;background:${statusColors[i]}"></div>
+                </div>
+                <span class="text-[12.5px] font-extrabold text-slate-800 w-5 text-right shrink-0">${statusData[i]}</span>
+            </div>`;
+            });
+            if (total === 0) {
+                barsEl.innerHTML = '<p class="text-[11px] text-slate-400 italic">No applications yet.</p>';
+            }
+
+            // ── Donut ──
+            new Chart(document.getElementById('statusChart'), {
+                type: 'doughnut',
+                data: {
+                    labels: statusLabels,
+                    datasets: [{
+                        data: statusData,
+                        backgroundColor: statusColors,
+                        borderWidth: 4,
+                        borderColor: '#fff',
+                        hoverOffset: 6
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: true,
+                    cutout: '68%',
+                    plugins: {
+                        legend: {
+                            display: false
+                        }
+                    }
+                }
+            });
+
+            // ── Legend (circular dots + bold %) ──
+            const legendEl = document.getElementById('status-legend');
+            legendEl.innerHTML = '';
+            statusLabels.forEach((label, i) => {
+                if (statusData[i] === 0) return;
+                const pct = total > 0 ? Math.round(statusData[i] / total * 100) : 0;
+                legendEl.innerHTML += `
+            <div class="flex items-center gap-2.5 py-[7px] border-b border-slate-100 last:border-0">
+                <span class="w-[11px] h-[11px] rounded-full shrink-0" style="background:${statusColors[i]}"></span>
+                <span class="text-[13px] font-semibold text-slate-700 flex-1">${label}</span>
+                <span class="text-[13px] font-extrabold text-slate-800">${pct}%</span>
+            </div>`;
+            });
+            if (total === 0) {
+                legendEl.innerHTML = '<p class="text-[11px] text-slate-400 italic">No data yet.</p>';
+            }
+        })();
+
+        // Applications by Country (dual bar: total reviewed vs approved)
+        const countryLabels = <?= json_encode(array_column($country_data, 'country')) ?>;
+        const countryTotals = <?= json_encode(array_column($country_data, 'total')) ?>;
+        const countryApproved = <?= json_encode(array_column($country_data, 'approved')) ?>;
+
+        new Chart(document.getElementById('countryChart'), {
+            type: 'bar',
+            data: {
+                labels: countryLabels,
+                datasets: [{
+                        label: 'All Reviewed',
+                        data: countryTotals,
+                        backgroundColor: '#3b82f6',
+                        borderRadius: 4,
+                        maxBarThickness: 28
+                    },
+                    {
+                        label: 'Approved',
+                        data: countryApproved,
+                        backgroundColor: '#059669',
+                        borderRadius: 4,
+                        maxBarThickness: 28
+                    }
+                ]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                scales: {
+                    x: {
+                        grid: {
+                            display: false
+                        },
+                        ticks: {
+                            font: {
+                                size: 11,
+                                weight: '600'
+                            }
+                        }
+                    },
+                    y: {
+                        beginAtZero: true,
+                        ticks: {
+                            stepSize: 1,
+                            font: {
+                                size: 11
+                            }
+                        },
+                        grid: {
+                            color: '#f1f5f9'
+                        }
+                    }
+                },
+                plugins: {
+                    legend: {
+                        position: 'bottom',
+                        labels: {
+                            boxWidth: 8,
+                            boxHeight: 8,
+                            usePointStyle: true,
+                            pointStyle: 'circle',
+                            font: {
+                                size: 11,
+                                weight: '600'
+                            }
+                        }
+                    }
+                }
+            }
+        });
+    </script>
+
     <script type="module" src="../js/main.js"></script>
 
     <?php include '../includes/login_toast.php'; ?>

@@ -15,7 +15,8 @@ $client_email = $_SESSION['user_email'];
 $stmt = $database->prepare("
     SELECT 
         cid, 
-        CONCAT(first_name, ' ', last_name) AS full_name 
+        CONCAT(first_name, ' ', last_name) AS full_name,
+        profile_picture
     FROM clients 
     WHERE email = ? 
     LIMIT 1
@@ -29,6 +30,8 @@ if (!$client) {
     exit;
 }
 $client_id = (int) $client['cid'];
+$has_picture = !empty($client['profile_picture']);
+$picture_url = $has_picture ? '../' . $client['profile_picture'] : null;
 $app_count = 0;
 $stmt = $database->prepare("SELECT COUNT(*) as c FROM applications WHERE client_id = ?");
 $stmt->bind_param("i", $client_id);
@@ -63,7 +66,7 @@ if ($step >= 2 && !$application_id) {
     $step = 1;
 }
 
-// ========== STEP 1: Create Application ==========
+// STEP 1: Create Application 
 if ($step === 1 && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'create') {
     $stmt = $database->prepare("INSERT INTO applications (client_id, rsf_id, status) VALUES (?, ?, 'pending')");
     $stmt->bind_param("ii", $client_id, $rsf_id);
@@ -80,7 +83,7 @@ if ($step === 1 && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action
     $error = 'Failed to create application.';
 }
 
-// ========== STEP 2: Answer Questions ==========
+// STEP 2: Answer Questions 
 $questions = [];
 $res = $database->query("SELECT id, question_text, is_required, order_no FROM questions ORDER BY COALESCE(order_no, 999), id");
 if ($res) $questions = $res->fetch_all(MYSQLI_ASSOC);
@@ -109,7 +112,7 @@ if ($step === 2 && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action
     }
 }
 
-// ========== STEP 3: Upload Documents ==========
+// STEP 3: Upload Documents 
 $docs = [];
 if ($application_id) {
     $stmt = $database->prepare("SELECT * FROM application_documents WHERE application_id = ? ORDER BY uploaded_at");
@@ -148,7 +151,7 @@ if ($step === 3 && $_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 }
 
-// ========== STEP 4: Submit ==========
+// STEP 4: Submit 
 if ($step === 4 && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'submit') {
     $application_id = (int) $_SESSION['apply_app_id'];
     if (application_status_change($database, $application_id, 'pending', $client_email, 'Application submitted')) {
@@ -178,7 +181,7 @@ $step_labels = ['Confirm', 'Questions', 'Documents', 'Submit'];
     <link rel="stylesheet" href="../css/dashboard.css">
 
     <style>
-        /* ── Step tracker ── */
+        /*  Step tracker  */
         .stepper {
             display: flex;
             align-items: center;
@@ -524,7 +527,9 @@ $step_labels = ['Confirm', 'Questions', 'Documents', 'Submit'];
         </div>
         <div class="topbar-right">
             <span class="topbar-date" id="live-date"></span>
-            <div class="topbar-avatar"><?= strtoupper(substr($client['full_name'] ?? 'U', 0, 2)) ?></div>
+            <div class="topbar-avatar" <?= $has_picture ? "style=\"background-image:url('" . htmlspecialchars($picture_url) . "');background-size:cover;background-position:center;\"" : '' ?>>
+                <?= $has_picture ? '' : strtoupper(substr($client['full_name'] ?? 'U', 0, 2)) ?>
+            </div>
         </div>
     </header>
 
@@ -574,7 +579,7 @@ $step_labels = ['Confirm', 'Questions', 'Documents', 'Submit'];
             </div>
         <?php endif; ?>
 
-        <!-- ====== STEP 1: Confirm ====== -->
+        <!--  STEP 1: Confirm  -->
         <?php if ($step === 1): ?>
             <div class="card fade-in">
                 <div class="card-head">
@@ -611,7 +616,7 @@ $step_labels = ['Confirm', 'Questions', 'Documents', 'Submit'];
                 </form>
             </div>
 
-            <!-- ====== STEP 2: Questions ====== -->
+            <!--  STEP 2: Questions  -->
         <?php elseif ($step === 2): ?>
             <div class="card fade-in">
                 <div class="card-head">
@@ -658,7 +663,7 @@ $step_labels = ['Confirm', 'Questions', 'Documents', 'Submit'];
                 </form>
             </div>
 
-            <!-- ====== STEP 3: Documents ====== -->
+            <!--  STEP 3: Documents  -->
         <?php elseif ($step === 3): ?>
             <div class="card fade-in" style="margin-bottom:12px;">
                 <div class="card-head">
@@ -732,7 +737,7 @@ $step_labels = ['Confirm', 'Questions', 'Documents', 'Submit'];
                 </button>
             </form>
 
-            <!-- ====== STEP 4: Submit ====== -->
+            <!--STEP 4: Submit-->
         <?php elseif ($step === 4): ?>
             <div class="card fade-in">
                 <div class="card-head">
@@ -779,9 +784,7 @@ $step_labels = ['Confirm', 'Questions', 'Documents', 'Submit'];
 
     </main>
 
-    <!-- ══════════════════════════════════════════
-         FLOATING DOCK
-    ══════════════════════════════════════════ -->
+    <!-- FLOATING DOCK -->
     <div class="dock-wrap">
         <nav class="dock">
 
@@ -827,14 +830,32 @@ $step_labels = ['Confirm', 'Questions', 'Documents', 'Submit'];
 
 
     <script>
-        document.getElementById('live-date').textContent =
-            new Date().toLocaleDateString('en-PH', {
+        /*  Live date + time  */
+        function updateLiveDateTime() {
+            const el = document.getElementById('live-date');
+            if (!el) return;
+
+            const now = new Date();
+
+            const datePart = now.toLocaleDateString('en-PH', {
                 weekday: 'short',
                 year: 'numeric',
                 month: 'short',
                 day: 'numeric'
             }).toUpperCase();
 
+            const timePart = now.toLocaleTimeString('en-PH', {
+                hour: 'numeric',
+                minute: '2-digit',
+                second: '2-digit',
+                hour12: true
+            }).toLowerCase();
+
+            el.textContent = `${datePart} | ${timePart}`;
+        }
+
+        updateLiveDateTime();
+        setInterval(updateLiveDateTime, 1000); // refresh every second
 
 
         function handleSubmit(e) {

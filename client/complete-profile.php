@@ -34,6 +34,12 @@ $client_id = (int) $row['cid'];
 
 // ── Sanitize & validate inputs ──────────────────────────────────────────────
 
+/**
+ * Trim a value if it is set; otherwise return null.
+ *
+ * @param mixed $val
+ * @return string|null
+ */
 function trim_input($val)
 {
     return isset($val) ? trim($val) : null;

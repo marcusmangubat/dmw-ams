@@ -13,7 +13,7 @@ if (!isset($_SESSION['user_email']) || ($_SESSION['user_type'] ?? '') !== 'clien
     header('Location: ../login.php');
     exit;
 }
-
+date_default_timezone_set('Asia/Manila');
 /* ══════════════════════════════════════════════════════════════════════════════
    HELPERS  (mirrors my-applications.php originals)
 ══════════════════════════════════════════════════════════════════════════════ */
@@ -107,6 +107,24 @@ function myapp_load_status_history(mysqli $db, int $app_id): array
     return $rows;
 }
 
+function myapp_load_doc_comments(mysqli $db, int $app_id): array
+{
+    $stmt = $db->prepare("
+        SELECT dc.comment, dc.commented_by, dc.created_at,
+               ad.document_type, w.usertype AS commenter_type
+        FROM document_comments dc
+        JOIN application_documents ad ON dc.document_id = ad.id
+        LEFT JOIN webuser w ON w.email = dc.commented_by
+        WHERE ad.application_id = ?
+        ORDER BY dc.created_at ASC
+    ");
+    $stmt->bind_param("i", $app_id);
+    $stmt->execute();
+    $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+    $stmt->close();
+    return $rows;
+}
+
 function myapp_load_eval_comments(mysqli $db, int $app_id): string
 {
     $stmt = $db->prepare("SELECT comments FROM evaluations WHERE application_id = ? ORDER BY evaluated_at DESC LIMIT 1");
@@ -171,7 +189,7 @@ function myapp_status_info(string $status): array
 ══════════════════════════════════════════════════════════════════════════════ */
 
 $client_email = $_SESSION['user_email'];
-$stmt = $database->prepare("SELECT cid, CONCAT(first_name, ' ', last_name) AS full_name FROM clients WHERE email = ? LIMIT 1");
+$stmt = $database->prepare("SELECT cid, profile_picture, CONCAT(first_name, ' ', last_name) AS full_name FROM clients WHERE email = ? LIMIT 1");
 $stmt->bind_param("s", $client_email);
 $stmt->execute();
 $client = $stmt->get_result()->fetch_assoc();
@@ -181,6 +199,9 @@ if (!$client) {
     exit;
 }
 $client_id = (int)$client['cid'];
+$has_picture = !empty($client['profile_picture']);
+$picture_url = $has_picture ? '../' . $client['profile_picture'] : null;
+$open_app_id = isset($_GET['id']) ? (int) $_GET['id'] : 0;
 
 /* ══════════════════════════════════════════════════════════════════════════════
    WIZARD STATE
@@ -243,6 +264,7 @@ if ($show_wizard) $wizard_questions = myapp_questions_for_job($database, $wizard
 ══════════════════════════════════════════════════════════════════════════════ */
 
 $applications = [];
+$open_app_idx = null;
 
 if (!$show_wizard) {
     $stmt = $database->prepare("
@@ -269,6 +291,18 @@ if (!$show_wizard) {
         $app['required_docs']   = myapp_required_documents_for_job($database, $rsf_id);
         $app['uploaded_docs']   = myapp_load_docs($database, $aid);
         $app['status_history']  = myapp_load_status_history($database, $aid);
+        $app['doc_comments'] = myapp_load_doc_comments($database, $aid);
+
+        // Merge status changes + document comments into one chronological timeline
+        $events = [];
+        foreach ($app['status_history'] as $sh) {
+            $events[] = ['type' => 'status', 'ts' => strtotime($sh['changed_at']), 'data' => $sh];
+        }
+        foreach ($app['doc_comments'] as $dc) {
+            $events[] = ['type' => 'comment', 'ts' => strtotime($dc['created_at']), 'data' => $dc];
+        }
+        usort($events, fn($a, $b) => $a['ts'] <=> $b['ts']);
+        $app['timeline_events'] = $events;
         $app['eval_comments']   = myapp_load_eval_comments($database, $aid);
         $app['is_assigned']     = myapp_is_assigned($database, $aid);
         $app['req_lines']       = myapp_requirement_lines($app);
@@ -285,6 +319,16 @@ if (!$show_wizard) {
     unset($app);
     $total     = count($applications);
     $app_count = $total;
+
+    $open_app_idx = null;
+    if ($open_app_id > 0) {
+        foreach ($applications as $i => $a) {
+            if ((int)$a['id'] === $open_app_id) {
+                $open_app_idx = $i;
+                break;
+            }
+        }
+    }
 } else {
     // Wizard is active — skip the heavy per-application loading entirely.
     // Just get a cheap count for the dock badge.
@@ -323,7 +367,6 @@ $single_mode = ($total === 1 && !$show_wizard);
     <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
     <link rel="icon" type="image/png" href="https://dmw.gov.ph/images/dmw_tahanan_ng_ofw_colored.png">
     <link rel="stylesheet" href="../css/dashboard.css">
-
     <style>
         /* ── Application Picker (multi-app list) ── */
         .app-picker-list {
@@ -566,8 +609,9 @@ $single_mode = ($total === 1 && !$show_wizard);
         /* Tab row */
         .app-tabs {
             display: flex;
-            overflow-x: auto;
-            scrollbar-width: none;
+            width: 100%;
+            overflow-x: hidden;
+            /* was auto — no longer needed once tabs stretch */
             border-bottom: 1px solid var(--border);
             background: var(--surface);
         }
@@ -580,8 +624,13 @@ $single_mode = ($total === 1 && !$show_wizard);
             display: flex;
             flex-direction: column;
             align-items: center;
+            justify-content: center;
             gap: 3px;
-            padding: 10px 14px;
+            flex: 1 1 0;
+            /* was flex-shrink:0 — now grows/shrinks equally, fills row */
+            min-width: 0;
+            /* allows text to actually shrink/ellipsis instead of overflowing */
+            padding: 10px 8px;
             border-bottom: 2.5px solid transparent;
             font-size: 9.5px;
             font-weight: 700;
@@ -590,7 +639,8 @@ $single_mode = ($total === 1 && !$show_wizard);
             color: var(--text3);
             cursor: pointer;
             white-space: nowrap;
-            flex-shrink: 0;
+            overflow: hidden;
+            text-overflow: ellipsis;
             transition: color .18s, border-color .18s, background .18s;
             font-family: 'DM Sans', sans-serif;
             background: none;
@@ -629,11 +679,36 @@ $single_mode = ($total === 1 && !$show_wizard);
             cursor: not-allowed;
         }
 
+        @media (max-width: 480px) {
+            .atab {
+                padding: 8px 4px;
+                font-size: 8px;
+                gap: 2px;
+            }
+
+            .atab i {
+                font-size: 11px;
+            }
+        }
+
+        @media (max-width: 360px) {
+
+            .atab span,
+            .atab {
+                font-size: 0;
+                /* hide text label */
+            }
+
+            .atab i {
+                font-size: 14px;
+            }
+        }
+
         /* Part divider tab */
         .atab-divider {
             width: 1px;
+            flex: 0 0 auto;
             background: var(--border);
-            flex-shrink: 0;
             margin: 6px 0;
         }
 
@@ -645,6 +720,60 @@ $single_mode = ($total === 1 && !$show_wizard);
         .atab-content.active {
             display: block;
             animation: fadeUp .22s ease;
+        }
+
+        /* ── Current Stage Indicator (Status tab) ── */
+        .atab.current-stage {
+            color: var(--green) !important;
+            border-bottom-color: var(--green) !important;
+            background: #ecfdf5;
+            position: relative;
+        }
+
+        .atab.current-stage:hover {
+            color: var(--green) !important;
+            background: #dcfce7;
+        }
+
+        .atab.current-stage::after {
+            content: '';
+            position: absolute;
+            top: 6px;
+            right: 10px;
+            width: 7px;
+            height: 7px;
+            border-radius: 50%;
+            background: var(--green);
+            animation: dmwPulseDot 1.6s infinite;
+        }
+
+        @keyframes dmwPulseDot {
+            0% {
+                box-shadow: 0 0 0 0 rgba(16, 185, 129, .55);
+            }
+
+            70% {
+                box-shadow: 0 0 0 6px rgba(16, 185, 129, 0);
+            }
+
+            100% {
+                box-shadow: 0 0 0 0 rgba(16, 185, 129, 0);
+            }
+        }
+
+        /* Checkmark badge for already-completed tabs */
+        .atab.done {
+            position: relative;
+        }
+
+        .atab.done::before {
+            content: '\2713';
+            position: absolute;
+            top: 5px;
+            right: 9px;
+            font-size: 9px;
+            font-weight: 900;
+            color: var(--green);
         }
 
         .tab-body {
@@ -1437,22 +1566,24 @@ $single_mode = ($total === 1 && !$show_wizard);
         <div class="topbar-right">
             <span class="topbar-date" id="live-date"></span>
             <div class="tb-btn"><i class="fas fa-bell"></i><span class="notif-dot"></span></div>
-            <div class="tb-btn"><i class="fas fa-magnifying-glass"></i></div>
-            <div class="topbar-avatar"><?= htmlspecialchars($initials ?: 'CL') ?></div>
+            <!-- <div class="tb-btn"><i class="fas fa-magnifying-glass"></i></div>-->
+            <div class="topbar-avatar" <?= $has_picture ? "style=\"background-image:url('" . htmlspecialchars($picture_url) . "');background-size:cover;background-position:center;\"" : '' ?>>
+                <?= $has_picture ? '' : htmlspecialchars($initials ?: 'CL') ?>
+            </div>
         </div>
     </header>
 
     <!-- SUBBAR -->
     <div class="subbar">
-        <div class="subbar-top">
-            <div class="subbar-greeting">
+        <div class="subbar-top flex items-center gap-2 flex-nowrap" style="width:100%;">
+            <div class="subbar-greeting min-w-0">
                 <h2>My Applications</h2>
                 <p><?= $total ?> total application<?= $total !== 1 ? 's' : '' ?></p>
             </div>
-        </div>
-        <div class="filter-scroll">
-            <a href="jobs.php" class="filter-pill"><i class="fas fa-briefcase"></i> Browse Jobs</a>
-            <a href="index.php" class="filter-pill"><i class="fas fa-house"></i> Dashboard</a>
+            <div class="subbar-actions flex items-center gap-2 flex-shrink-0" style="margin-left:auto;">
+                <a href="jobs.php" class="filter-pill"><i class="fas fa-briefcase"></i> <span class="hidden sm:inline">Browse Jobs</span></a>
+                <a href="index.php" class="filter-pill"><i class="fas fa-house"></i> <span class="hidden sm:inline">Dashboard</span></a>
+            </div>
         </div>
     </div>
 
@@ -1545,10 +1676,10 @@ $single_mode = ($total === 1 && !$show_wizard);
                                         <dd class="wiz-dd"><?= (int)($wizard_job['slots_available'] ?? 0) ?></dd>
                                         <dt class="wiz-dt">Deadline</dt>
                                         <dd class="wiz-dd"><?= $wizard_job['deadline'] ? date('F d, Y', strtotime($wizard_job['deadline'])) : 'Open' ?></dd>
-                                        <dt class="wiz-dt">Qualifications &amp; requirements</dt>
-                                        <dd class="wiz-dd">
+                                        <!--<dt class="wiz-dt">Qualifications &amp; requirements</dt>-->
+                                        <!-- <dd class="wiz-dd">
                                             <div class="wiz-qual"><?= htmlspecialchars($wizard_job['qualifications'] ?? 'See RSF PDF for full details.') ?></div>
-                                        </dd>
+                                        </dd>-->
                                     </dl>
                                     <?php if (!empty($wizard_job['pdf_path'])): ?>
                                         <p class="wiz-muted"><a href="../<?= htmlspecialchars($wizard_job['pdf_path']) ?>" target="_blank" style="font-weight:700;color:var(--blue-lt);"><i class="fas fa-file-pdf"></i> Open full RSF PDF</a></p>
@@ -1740,25 +1871,150 @@ $single_mode = ($total === 1 && !$show_wizard);
             <?php endif; ?>
 
             <?php if ($total > 1): ?>
-                <!-- ── MULTI-APPLICATION: show picker first ── -->
+                <!-- ── MULTI-APPLICATION: responsive picker (Tailwind) ──
+                     Desktop/tablet: table with an Action column.
+                     Mobile: stacked cards.
+                     Both use the exact same openAppDetail(idx) call the
+                     old picker buttons used — no navigation change. ── -->
                 <div id="app-picker-section" class="fade-in d2">
-                    <div class="app-picker-list">
+
+                    <!-- Search + status filter — filters the picker list
+                         instantly, client-side, no page reload. All
+                         application data for this client is already
+                         rendered in the DOM (there is no large shared
+                         table to page through like the evaluator queue),
+                         so this filters the existing rows/cards directly
+                         instead of round-tripping to the server. -->
+                    <div class="bg-[var(--card)] border border-[var(--border)] rounded-[14px] p-3.5 mb-3.5 flex flex-col gap-2.5 sm:flex-row sm:items-center">
+                        <div class="relative flex-1">
+                            <i class="fas fa-search absolute left-3 top-1/2 -translate-y-1/2 text-[var(--text3)] text-xs pointer-events-none"></i>
+                            <input
+                                type="text"
+                                id="myapp-search-input"
+                                placeholder="Search by position, employer, RSF #, or country…"
+                                autocomplete="off"
+                                class="w-full py-[9px] pr-9 pl-[34px] border border-[var(--border)] rounded-[10px] text-[13px] font-medium text-[var(--text1)] bg-[var(--surface)] outline-none transition-colors focus:border-[var(--blue-lt)] focus:bg-white placeholder:text-[var(--text3)]">
+                            <button type="button" id="myapp-search-clear"
+                                class="absolute right-3 top-1/2 -translate-y-1/2 text-[var(--text3)] text-xs hidden hover:text-[var(--text1)]"
+                                title="Clear search">
+                                <i class="fas fa-xmark"></i>
+                            </button>
+                        </div>
+                        <select id="myapp-status-select"
+                            class="py-[9px] px-3 border border-[var(--border)] rounded-[10px] text-[13px] font-semibold text-[var(--text2)] bg-[var(--surface)] outline-none cursor-pointer transition-colors focus:border-[var(--blue-lt)] sm:w-56">
+                            <option value="">All Statuses</option>
+                            <option value="pending">Pending Evaluator Review</option>
+                            <option value="under_evaluation">Under Evaluation</option>
+                            <option value="for_compliance">For Compliance</option>
+                            <option value="resubmitted">Resubmitted</option>
+                            <option value="approved">Approved</option>
+                            <option value="disapproved">Disapproved</option>
+                        </select>
+                    </div>
+
+                    <!-- Empty state — shown when the search/status filter matches nothing -->
+                    <div id="myapp-picker-empty" class="rounded-2xl py-12 px-6 text-center" style="display:none;border:1.5px solid var(--border);background:var(--card);">
+                        <i class="fas fa-folder-open text-3xl block mb-3" style="color:var(--border);"></i>
+                        <p class="text-sm font-bold" style="color:var(--text2);">No applications match your search</p>
+                        <span class="text-xs" id="myapp-picker-empty-text" style="color:var(--text3);">Try a different keyword or status.</span>
+                    </div>
+
+                    <!-- Desktop / tablet: table -->
+                    <div id="myapp-picker-table-wrap" class="hidden md:block rounded-2xl overflow-hidden" style="border:1.5px solid var(--border);background:var(--card);">
+                        <div class="overflow-x-auto no-scrollbar">
+                            <table class="w-full min-w-[900px] border-collapse text-sm">
+                                <thead>
+                                    <tr class="text-[10px] font-bold uppercase tracking-wide" style="background:var(--surface);color:var(--text3);">
+                                        <th class="text-left px-5 py-3">Position &amp; Employer</th>
+                                        <th class="text-left px-5 py-3">RSF / Country</th>
+                                        <th class="text-left px-5 py-3">Status</th>
+                                        <th class="text-left px-5 py-3">Updated</th>
+                                        <th class="px-5 py-3 text-right">Action</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="myapp-picker-tbody">
+                                    <?php foreach ($applications as $idx => $app):
+                                        $si = $app['status_info']; ?>
+                                        <tr class="transition myapp-picker-row" style="border-top:1px solid var(--border);" id="picker-row-<?= $idx ?>"
+                                            data-position="<?= htmlspecialchars(strtolower($app['position_title'] ?? '')) ?>"
+                                            data-employer="<?= htmlspecialchars(strtolower($app['employer_name'] ?? '')) ?>"
+                                            data-rsf="<?= htmlspecialchars(strtolower($app['rsf_number'] ?? '')) ?>"
+                                            data-country="<?= htmlspecialchars(strtolower($app['worksite_country'] ?? '')) ?>"
+                                            data-status="<?= htmlspecialchars(strtolower($app['status'] ?? '')) ?>"
+                                            onmouseover="this.style.background='var(--surface)'" onmouseout="this.style.background=''">
+                                            <td class="px-5 py-3">
+                                                <div class="flex items-center gap-3">
+                                                    <div class="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-xl text-[12px]" style="background:<?= $si['color'] ?>1a;color:<?= $si['color'] ?>;">
+                                                        <i class="fas <?= $si['icon'] ?>"></i>
+                                                    </div>
+                                                    <div class="min-w-0">
+                                                        <div class="truncate text-[13px] font-bold" style="color:var(--text1);"><?= htmlspecialchars($app['position_title']) ?></div>
+                                                        <div class="truncate text-[11px] font-medium" style="color:var(--text3);"><?= htmlspecialchars($app['employer_name']) ?></div>
+                                                    </div>
+                                                </div>
+                                            </td>
+                                            <td class="px-5 py-3">
+                                                <div class="text-[12.5px] font-bold" style="color:var(--blue-lt);"><?= htmlspecialchars($app['rsf_number']) ?></div>
+                                                <div class="text-[11px]" style="color:var(--text3);"><?= htmlspecialchars($app['worksite_country'] ?? '—') ?></div>
+                                            </td>
+                                            <td class="px-5 py-3">
+                                                <span class="status-pill <?= $si['pill'] ?>"><?= htmlspecialchars($si['label']) ?></span>
+                                            </td>
+                                            <td class="px-5 py-3 text-[11.5px]" style="color:var(--text3);">
+                                                <?= htmlspecialchars(myapp_relative_time($app['updated_at'])) ?>
+                                            </td>
+                                            <td class="px-5 py-3 text-right">
+                                                <button type="button" onclick="openAppDetail(<?= $idx ?>)" id="picker-item-<?= $idx ?>"
+                                                    class="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[11px] font-bold text-white transition hover:opacity-90"
+                                                    style="background:var(--blue-lt);">
+                                                    View <i class="fas fa-chevron-right text-[9px]"></i>
+                                                </button>
+                                            </td>
+                                        </tr>
+                                    <?php endforeach; ?>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- Mobile: stacked cards -->
+                    <div id="myapp-picker-cards" class="md:hidden flex flex-col gap-2.5">
                         <?php foreach ($applications as $idx => $app):
                             $si = $app['status_info']; ?>
-                            <button class="app-picker-item" onclick="openAppDetail(<?= $idx ?>)" id="picker-item-<?= $idx ?>">
-                                <div class="app-picker-icon" style="background:<?= $si['color'] ?>;">
-                                    <i class="fas <?= $si['icon'] ?>"></i>
+                            <div class="rounded-2xl p-3.5 myapp-picker-card" style="border:1.5px solid var(--border);background:var(--card);" id="picker-card-<?= $idx ?>"
+                                data-position="<?= htmlspecialchars(strtolower($app['position_title'] ?? '')) ?>"
+                                data-employer="<?= htmlspecialchars(strtolower($app['employer_name'] ?? '')) ?>"
+                                data-rsf="<?= htmlspecialchars(strtolower($app['rsf_number'] ?? '')) ?>"
+                                data-country="<?= htmlspecialchars(strtolower($app['worksite_country'] ?? '')) ?>"
+                                data-status="<?= htmlspecialchars(strtolower($app['status'] ?? '')) ?>">
+                                <div class="flex items-start gap-3">
+                                    <div class="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-xl text-[13px]" style="background:<?= $si['color'] ?>1a;color:<?= $si['color'] ?>;">
+                                        <i class="fas <?= $si['icon'] ?>"></i>
+                                    </div>
+                                    <div class="min-w-0 flex-1">
+                                        <div class="flex items-start justify-between gap-2">
+                                            <div class="min-w-0">
+                                                <div class="truncate text-[13.5px] font-bold" style="color:var(--text1);"><?= htmlspecialchars($app['position_title']) ?></div>
+                                                <div class="truncate text-[11px] font-medium" style="color:var(--text3);"><?= htmlspecialchars($app['employer_name']) ?></div>
+                                            </div>
+                                            <span class="status-pill <?= $si['pill'] ?> flex-shrink-0"><?= htmlspecialchars($si['label']) ?></span>
+                                        </div>
+                                        <div class="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10.5px] font-medium" style="color:var(--text3);">
+                                            <span class="font-bold" style="color:var(--blue-lt);"><i class="fas fa-hashtag text-[9px] mr-1"></i><?= htmlspecialchars($app['rsf_number']) ?></span>
+                                            <span><i class="fas fa-earth-asia text-[9px] mr-1 opacity-70"></i><?= htmlspecialchars($app['worksite_country'] ?? '—') ?></span>
+                                            <span><i class="fas fa-clock text-[9px] mr-1 opacity-70"></i>Updated <?= htmlspecialchars(myapp_relative_time($app['updated_at'])) ?></span>
+                                        </div>
+                                    </div>
                                 </div>
-                                <div class="app-picker-info">
-                                    <div class="app-picker-title"><?= htmlspecialchars($app['position_title']) ?></div>
-                                    <div class="app-picker-meta"><?= htmlspecialchars($app['employer_name']) ?> &middot; <?= htmlspecialchars($app['worksite_country'] ?? '') ?> &middot; <?= htmlspecialchars($app['rsf_number']) ?></div>
-                                    <div class="app-picker-date">Updated <?= htmlspecialchars(myapp_relative_time($app['updated_at'])) ?></div>
-                                </div>
-                                <span class="status-pill <?= $si['pill'] ?>"><?= htmlspecialchars($si['label']) ?></span>
-                                <i class="fas fa-chevron-right app-picker-arrow"></i>
-                            </button>
+                                <button type="button" onclick="openAppDetail(<?= $idx ?>)"
+                                    class="mt-3 w-full inline-flex items-center justify-center gap-1.5 rounded-xl px-3 py-2 text-[12px] font-bold text-white transition"
+                                    style="background:var(--blue-lt);">
+                                    View <i class="fas fa-chevron-right text-[10px]"></i>
+                                </button>
+                            </div>
                         <?php endforeach; ?>
                     </div>
+
                 </div>
             <?php endif; ?>
 
@@ -1818,7 +2074,7 @@ $single_mode = ($total === 1 && !$show_wizard);
                                 <i class="fas fa-paper-plane"></i> Review &amp; Submit
                             </button>
                             <div class="atab-divider"></div>
-                            <button class="atab active" onclick="switchAppTab(<?= $idx ?>,'atcontent-status-<?= $idx ?>',this,'seg-part2-<?= $idx ?>')">
+                            <button class="atab active current-stage" onclick="switchAppTab(<?= $idx ?>,'atcontent-status-<?= $idx ?>',this,'seg-part2-<?= $idx ?>')">
                                 <i class="fas fa-chart-line"></i> Status
                             </button>
                         </div>
@@ -2038,26 +2294,47 @@ $single_mode = ($total === 1 && !$show_wizard);
                                 <?php endif; ?>
 
                                 <!-- Timeline -->
-                                <?php if (!empty($history)): ?>
+                                <?php $timeline_events = $app['timeline_events'] ?? []; ?>
+                                <?php if (!empty($timeline_events)): ?>
                                     <p style="font-size:10px;font-weight:800;letter-spacing:.07em;text-transform:uppercase;color:var(--text3);margin-bottom:10px;">Status History</p>
                                     <div class="timeline">
-                                        <?php foreach ($history as $sh):
-                                            $toSt = strtolower((string)($sh['to_status'] ?? ''));
-                                            $dotC = match (true) {
-                                                $toSt === 'approved'       => 'done',
-                                                $toSt === 'disapproved'    => 'bad',
-                                                $toSt === 'for_compliance' => 'warn',
-                                                $toSt === 'resubmitted'    => 'current',
-                                                in_array($toSt, ['under_evaluation', 'assign', 'assigned'], true) => 'current',
-                                                $toSt === 'pending'        => '',
-                                                default => ''
-                                            }; ?>
-                                            <div class="timeline-item">
-                                                <div class="timeline-dot <?= $dotC ?>"></div>
-                                                <div class="timeline-to"><?= htmlspecialchars(ucwords(str_replace('_', ' ', $sh['to_status'] ?? '—'))) ?></div>
-                                                <?php if (!empty($sh['reason'])): ?><div class="timeline-reason"><?= htmlspecialchars($sh['reason']) ?></div><?php endif; ?>
-                                                <div class="timeline-date"> <?= date('F d, Y • g:i a', strtotime($sh['changed_at'])) ?> &middot; <?= htmlspecialchars(myapp_relative_time($sh['changed_at'])) ?></div>
-                                            </div>
+                                        <?php foreach ($timeline_events as $ev): ?>
+
+                                            <?php if ($ev['type'] === 'status'):
+                                                $sh = $ev['data'];
+                                                $toSt = strtolower((string)($sh['to_status'] ?? ''));
+                                                $dotC = match (true) {
+                                                    $toSt === 'approved'       => 'done',
+                                                    $toSt === 'disapproved'    => 'bad',
+                                                    $toSt === 'for_compliance' => 'warn',
+                                                    $toSt === 'resubmitted'    => 'current',
+                                                    in_array($toSt, ['under_evaluation', 'assign', 'assigned'], true) => 'current',
+                                                    $toSt === 'pending'        => '',
+                                                    default => ''
+                                                }; ?>
+                                                <div class="timeline-item">
+                                                    <div class="timeline-dot <?= $dotC ?>"></div>
+                                                    <div class="timeline-to"><?= htmlspecialchars(ucwords(str_replace('_', ' ', $sh['to_status'] ?? '—'))) ?></div>
+                                                    <?php if (!empty($sh['reason'])): ?><div class="timeline-reason"><?= htmlspecialchars($sh['reason']) ?></div><?php endif; ?>
+                                                    <div class="timeline-date"><?= date('F d, Y • g:i a', strtotime($sh['changed_at'])) ?> &middot; <?= htmlspecialchars(myapp_relative_time($sh['changed_at'])) ?></div>
+                                                </div>
+
+                                            <?php else: /* comment event */
+                                                $dc = $ev['data'];
+                                                $role_label = match ($dc['commenter_type'] ?? '') {
+                                                    'evaluator' => 'Evaluator',
+                                                    'admin'     => 'Admin',
+                                                    default     => 'Reviewer',
+                                                };
+                                                $doc_label = ucwords(str_replace('_', ' ', $dc['document_type'] ?? 'Document')); ?>
+                                                <div class="timeline-item">
+                                                    <div class="timeline-dot" style="background:var(--amber);box-shadow:0 0 0 2px #fde68a;"></div>
+                                                    <div class="timeline-to"><i class="fas fa-comment-dots" style="color:var(--amber);margin-right:5px;"></i>Comment on <?= htmlspecialchars($doc_label) ?></div>
+                                                    <div class="timeline-reason">"<?= htmlspecialchars($dc['comment']) ?>" &mdash; <?= htmlspecialchars($role_label) ?></div>
+                                                    <div class="timeline-date"><?= date('F d, Y • g:i a', strtotime($dc['created_at'])) ?> &middot; <?= htmlspecialchars(myapp_relative_time($dc['created_at'])) ?></div>
+                                                </div>
+                                            <?php endif; ?>
+
                                         <?php endforeach; ?>
                                     </div>
                                 <?php else: ?>
@@ -2103,16 +2380,34 @@ $single_mode = ($total === 1 && !$show_wizard);
     </div>
 
     <script>
-        /* ── Live date ── */
-        document.getElementById('live-date').textContent =
-            new Date().toLocaleDateString('en-PH', {
+        /* ── Live date + time  */
+        function updateLiveDateTime() {
+            const el = document.getElementById('live-date');
+            if (!el) return;
+
+            const now = new Date();
+
+            const datePart = now.toLocaleDateString('en-PH', {
                 weekday: 'short',
                 year: 'numeric',
                 month: 'short',
                 day: 'numeric'
             }).toUpperCase();
 
-        /* ══ TAB SWITCHING ══════════════════════════════════════════════════════ */
+            const timePart = now.toLocaleTimeString('en-PH', {
+                hour: 'numeric',
+                minute: '2-digit',
+                second: '2-digit',
+                hour12: true
+            }).toLowerCase();
+
+            el.textContent = `${datePart} | ${timePart}`;
+        }
+
+        updateLiveDateTime();
+        setInterval(updateLiveDateTime, 1000); // refresh every second
+
+        /*  TAB SWITCHING  */
 
         /** Switch wizard tabs (new application flow) */
         function switchWizTab(tabId, btn) {
@@ -2169,6 +2464,78 @@ $single_mode = ($total === 1 && !$show_wizard);
                 });
             }
         }
+
+        /* PICKER SEARCH + STATUS FILTER 
+           Unlike the evaluator queue (applications.php), every application
+           row/card here already carries its own data-* attributes rendered
+           server-side — there's no separate large table to query, so this
+           filters the existing DOM nodes directly instead of fetching from
+           the server. Still "no page reload," just done client-side since
+           the full applicant dataset is already on the page. */
+        (function() {
+            const searchInput = document.getElementById('myapp-search-input');
+            const statusSelect = document.getElementById('myapp-status-select');
+            const clearBtn = document.getElementById('myapp-search-clear');
+            const emptyState = document.getElementById('myapp-picker-empty');
+            const emptyText = document.getElementById('myapp-picker-empty-text');
+            const tableWrap = document.getElementById('myapp-picker-table-wrap');
+            const cardsWrap = document.getElementById('myapp-picker-cards');
+            if (!searchInput || !statusSelect) return;
+
+            function matches(el, term, status) {
+                if (status && el.dataset.status !== status) return false;
+                if (!term) return true;
+                return (
+                    el.dataset.position.includes(term) ||
+                    el.dataset.employer.includes(term) ||
+                    el.dataset.rsf.includes(term) ||
+                    el.dataset.country.includes(term)
+                );
+            }
+
+            function applyFilter() {
+                const term = searchInput.value.trim().toLowerCase();
+                const status = statusSelect.value;
+                clearBtn.classList.toggle('hidden', !term);
+
+                const rows = document.querySelectorAll('.myapp-picker-row');
+                const cards = document.querySelectorAll('.myapp-picker-card');
+                let visibleCount = 0;
+
+                rows.forEach(row => {
+                    const ok = matches(row, term, status);
+                    row.style.display = ok ? '' : 'none';
+                    if (ok) visibleCount++;
+                });
+                cards.forEach(card => {
+                    card.style.display = matches(card, term, status) ? '' : 'none';
+                });
+
+                if (visibleCount === 0) {
+                    if (tableWrap) tableWrap.style.display = 'none';
+                    if (cardsWrap) cardsWrap.style.display = 'none';
+                    emptyState.style.display = '';
+                    const parts = [];
+                    if (term) parts.push(`"${term}"`);
+                    if (status) parts.push(`status "${status.replace(/_/g, ' ')}"`);
+                    emptyText.textContent = parts.length ?
+                        `No applications match ${parts.join(' and ')}. Try a different keyword or status.` :
+                        'No applications found.';
+                } else {
+                    emptyState.style.display = 'none';
+                    if (tableWrap) tableWrap.style.display = '';
+                    if (cardsWrap) cardsWrap.style.display = '';
+                }
+            }
+
+            searchInput.addEventListener('input', applyFilter);
+            statusSelect.addEventListener('change', applyFilter);
+            clearBtn.addEventListener('click', () => {
+                searchInput.value = '';
+                applyFilter();
+                searchInput.focus();
+            });
+        })();
 
         /* ══ WIZARD LOGIC (new application flow) ═══════════════════════════════ */
         (function() {
@@ -2237,7 +2604,7 @@ $single_mode = ($total === 1 && !$show_wizard);
                 showErr('wizard-step1-err', '');
                 const ack = document.getElementById('rsf_ack');
                 if (ack && !ack.checked) {
-                    showErr('wizard-step1-err', 'Please confirm you have read and understood the RSF before proceeding.');
+                    showErr('wizard-step1-err', 'Please confirm you have read and understood the Recruitment Specification Form RSF before proceeding.');
                     return;
                 }
                 p1.disabled = true;
@@ -2426,7 +2793,154 @@ $single_mode = ($total === 1 && !$show_wizard);
             bindStep4Submit();
             bindStep4Reload();
         })();
+
+        /* CUSTOM STATUS DROPDOWN — same floating-panel pattern as evaluator/index.php's
+           enhancePillSelect(). Wraps the existing native #myapp-status-select so the
+           search/filter script above (which reads .value and listens for 'change')
+           keeps working completely unmodified. */
+        (function() {
+            function enhanceStatusSelect(select) {
+                if (!select) return;
+
+                const wrapper = document.createElement('div');
+                wrapper.className = 'relative inline-flex items-center w-full sm:w-56';
+                select.parentNode.insertBefore(wrapper, select);
+                wrapper.appendChild(select);
+                select.classList.add('hidden');
+                select.tabIndex = -1;
+
+                const trigger = document.createElement('button');
+                trigger.type = 'button';
+                trigger.setAttribute('aria-haspopup', 'listbox');
+                trigger.setAttribute('aria-expanded', 'false');
+                trigger.className = 'flex items-center gap-2 w-full py-[9px] px-3 border border-[var(--border)] rounded-[10px] text-[13px] font-semibold text-[var(--text2)] bg-[var(--surface)] cursor-pointer transition-colors hover:border-[var(--blue-lt)]';
+                trigger.innerHTML = '<span class="flex-1 text-left truncate"></span>' +
+                    '<i class="fas fa-chevron-down text-[10px] opacity-60 transition-transform flex-shrink-0"></i>';
+                wrapper.appendChild(trigger);
+
+                const panel = document.createElement('div');
+                panel.setAttribute('role', 'listbox');
+                panel.className = 'hidden fixed w-56 bg-white border border-slate-200 rounded-2xl shadow-[0_10px_30px_rgba(15,23,42,.14)] z-[999] overflow-hidden p-1.5 max-h-[260px] overflow-y-auto';
+                document.body.appendChild(panel); // appended to body so it isn't clipped by the filter bar
+
+                function buildRow(optionEl) {
+                    const row = document.createElement('div');
+                    row.setAttribute('role', 'option');
+                    row.className = 'flex items-center justify-between gap-2 py-2 px-3 mb-0.5 last:mb-0 rounded-xl text-[12.5px] font-semibold text-slate-600 cursor-pointer hover:bg-blue-50 hover:text-blue-600 transition-colors';
+                    row.dataset.value = optionEl.value;
+                    const label = document.createElement('span');
+                    label.className = 'truncate';
+                    label.textContent = optionEl.textContent;
+                    row.appendChild(label);
+                    row.addEventListener('click', () => {
+                        select.value = optionEl.value;
+                        closePanel();
+                        refresh();
+                        select.dispatchEvent(new Event('change', {
+                            bubbles: true
+                        }));
+                    });
+                    return row;
+                }
+
+                function renderList() {
+                    panel.innerHTML = '';
+                    Array.from(select.options).forEach(opt => panel.appendChild(buildRow(opt)));
+                    markSelected();
+                }
+
+                function markSelected() {
+                    panel.querySelectorAll('[role="option"]').forEach(row => {
+                        const selected = row.dataset.value === select.value;
+                        row.classList.toggle('bg-blue-50', selected);
+                        row.classList.toggle('text-blue-600', selected);
+                        row.classList.toggle('font-bold', selected);
+                        let check = row.querySelector('.fa-check');
+                        if (selected && !check) {
+                            const icon = document.createElement('i');
+                            icon.className = 'fas fa-check text-[10px] text-blue-500 flex-shrink-0';
+                            row.appendChild(icon);
+                        } else if (!selected && check) {
+                            check.remove();
+                        }
+                    });
+                }
+
+                function refresh() {
+                    const opt = select.options[select.selectedIndex];
+                    trigger.querySelector('span').textContent = opt ? opt.textContent : '';
+                    markSelected();
+                }
+
+                function positionPanel() {
+                    const rect = trigger.getBoundingClientRect();
+                    const panelWidth = 224; // matches w-56
+                    let left = rect.left;
+                    const maxLeft = window.innerWidth - panelWidth - 8;
+                    if (left > maxLeft) left = Math.max(8, maxLeft);
+                    panel.style.top = (rect.bottom + 6) + 'px';
+                    panel.style.left = left + 'px';
+                    panel.style.width = rect.width + 'px';
+                }
+
+                function onReposition() {
+                    if (!panel.classList.contains('hidden')) positionPanel();
+                }
+
+                function openPanel() {
+                    document.querySelectorAll('[role="listbox"]').forEach(p => {
+                        if (p !== panel) p.classList.add('hidden');
+                    });
+                    renderList();
+                    positionPanel();
+                    panel.classList.remove('hidden');
+                    trigger.setAttribute('aria-expanded', 'true');
+                    trigger.querySelector('.fa-chevron-down').classList.add('rotate-180');
+                    window.addEventListener('scroll', onReposition, true);
+                    window.addEventListener('resize', onReposition);
+                }
+
+                function closePanel() {
+                    panel.classList.add('hidden');
+                    trigger.setAttribute('aria-expanded', 'false');
+                    trigger.querySelector('.fa-chevron-down').classList.remove('rotate-180');
+                    window.removeEventListener('scroll', onReposition, true);
+                    window.removeEventListener('resize', onReposition);
+                }
+
+                trigger.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    panel.classList.contains('hidden') ? openPanel() : closePanel();
+                });
+                trigger.addEventListener('keydown', (e) => {
+                    if (['Enter', ' ', 'ArrowDown'].includes(e.key)) {
+                        e.preventDefault();
+                        openPanel();
+                    }
+                });
+                panel.addEventListener('keydown', (e) => {
+                    if (e.key === 'Escape') {
+                        closePanel();
+                        trigger.focus();
+                    }
+                });
+                panel.addEventListener('click', (e) => e.stopPropagation());
+                document.addEventListener('click', closePanel);
+
+                refresh();
+            }
+
+            enhanceStatusSelect(document.getElementById('myapp-status-select'));
+        })();
     </script>
+
+    <?php if ($open_app_idx !== null): ?>
+        <script>
+            document.addEventListener('DOMContentLoaded', function() {
+                openAppDetail(<?= (int) $open_app_idx ?>);
+            });
+        </script>
+    <?php endif; ?>
     <script type="module" src="../js/main.js"></script>
 
 </body>

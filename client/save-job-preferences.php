@@ -22,15 +22,14 @@ if (!$client) {
 }
 $client_id = (int) $client['cid'];
 
-// ── Input ────────────────────────────────────────────────────────────────
-$classification  = trim($_POST['preferred_classification'] ?? '');
-$employmentType  = trim($_POST['preferred_employment_type'] ?? '');
-$minSalaryRaw    = $_POST['min_salary_expected'] ?? '';
-$relocateRaw     = $_POST['willing_to_relocate'] ?? '';
-$countriesInput  = $_POST['countries'] ?? [];
-$positionsInput  = $_POST['positions'] ?? [];
+//  Input 
+$classification   = trim($_POST['preferred_classification'] ?? '');
+$employmentType   = trim($_POST['preferred_employment_type'] ?? '');
+$salaryRangeIdRaw = $_POST['salary_range_id'] ?? '';
+$countriesInput   = $_POST['countries'] ?? [];
+$positionsInput   = $_POST['positions'] ?? [];
 
-// ── Validation ───────────────────────────────────────────────────────────
+//  Validation 
 $validClassifications = ['Government', 'Private', 'Any'];
 $validEmploymentTypes = ['Full-time', 'Part-time', 'Contract'];
 
@@ -42,10 +41,6 @@ if (!in_array($employmentType, $validEmploymentTypes, true)) {
     echo json_encode(['success' => false, 'message' => 'Please select a valid employment type.']);
     exit;
 }
-if ($relocateRaw !== '0' && $relocateRaw !== '1') {
-    echo json_encode(['success' => false, 'message' => 'Please indicate whether you are willing to relocate.']);
-    exit;
-}
 if (!is_array($countriesInput) || count($countriesInput) < 1) {
     echo json_encode(['success' => false, 'message' => 'Please add at least one preferred country.']);
     exit;
@@ -55,7 +50,6 @@ if (!is_array($positionsInput) || count($positionsInput) < 1) {
     exit;
 }
 
-$relocate  = (int) $relocateRaw;
 $countries = array_slice(array_values(array_filter(array_map('trim', $countriesInput))), 0, 3);
 $positions = array_slice(array_values(array_filter(array_map('intval', $positionsInput))), 0, 3);
 
@@ -64,9 +58,17 @@ if (empty($countries) || empty($positions)) {
     exit;
 }
 
-$minSalary = ($minSalaryRaw !== '' && is_numeric($minSalaryRaw) && (float) $minSalaryRaw >= 0)
-    ? (float) $minSalaryRaw
-    : null;
+$salaryRangeId = null;
+if ($salaryRangeIdRaw !== '' && ctype_digit((string) $salaryRangeIdRaw)) {
+    $srStmt = $database->prepare("SELECT id FROM salary_ranges WHERE id = ? LIMIT 1");
+    $srStmt->bind_param("i", $salaryRangeIdRaw);
+    $srStmt->execute();
+    $srRow = $srStmt->get_result()->fetch_assoc();
+    $srStmt->close();
+    if ($srRow) {
+        $salaryRangeId = (int) $srRow['id'];
+    }
+}
 
 // Verify submitted subcategory_ids actually exist to avoid orphaned rows
 if (!empty($positions)) {
@@ -84,7 +86,7 @@ if (empty($positions)) {
     exit;
 }
 
-// ── Persist ──────────────────────────────────────────────────────────────
+//  Persist 
 $database->begin_transaction();
 try {
     $stmt = $database->prepare("SELECT id FROM client_preferences WHERE client_id = ? LIMIT 1");
@@ -96,20 +98,19 @@ try {
     if ($existing) {
         $stmt = $database->prepare("
             UPDATE client_preferences
-            SET preferred_classification = ?, min_salary_expected = ?,
-                preferred_employment_type = ?, willing_to_relocate = ?
+            SET preferred_classification = ?, salary_range_id = ?, preferred_employment_type = ?
             WHERE client_id = ?
         ");
-        $stmt->bind_param("sdsii", $classification, $minSalary, $employmentType, $relocate, $client_id);
+        $stmt->bind_param("sisi", $classification, $salaryRangeId, $employmentType, $client_id);
         $stmt->execute();
         $stmt->close();
     } else {
         $stmt = $database->prepare("
             INSERT INTO client_preferences
-                (client_id, preferred_classification, min_salary_expected, preferred_employment_type, willing_to_relocate)
-            VALUES (?, ?, ?, ?, ?)
+                (client_id, preferred_classification, salary_range_id, preferred_employment_type)
+            VALUES (?, ?, ?, ?)
         ");
-        $stmt->bind_param("isdsi", $client_id, $classification, $minSalary, $employmentType, $relocate);
+        $stmt->bind_param("isis", $client_id, $classification, $salaryRangeId, $employmentType);
         $stmt->execute();
         $stmt->close();
     }

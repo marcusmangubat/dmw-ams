@@ -846,8 +846,8 @@ $newest_joined    = !empty($evaluators) ? date('M d', strtotime($evaluators[0]['
         </div>
         <div class="topbar-right">
             <span class="topbar-date" id="live-date"></span>
-            <div class="tb-btn"><i class="fas fa-bell"></i><span class="notif-dot"></span></div>
-            <div class="tb-btn"><i class="fas fa-magnifying-glass"></i></div>
+            <div class="tb-btn"><i class="fas fa-bell"></i></div>
+            <!-- <div class="tb-btn"><i class="fas fa-magnifying-glass"></i></div>-->
             <div class="topbar-avatar">AU</div>
         </div>
     </header>
@@ -1121,14 +1121,10 @@ $newest_joined    = !empty($evaluators) ? date('M d', strtotime($evaluators[0]['
                 </div>
             </div>
             <div class="dk-div"></div>
-            <a href="user.php" class="dk active" data-tip="Evaluators">
-                <i class="fas fa-users-gear"></i>
-                <span class="dk-lbl">Evaluators</span>
-            </a>
-            <a href="assignments.html" class="dk" data-tip="Assignments">
+            <!--<a href="assignments.html" class="dk" data-tip="Assignments">
                 <i class="fas fa-list-check"></i>
                 <span class="dk-lbl">Assign</span>
-            </a>
+            </a>-->
             <a href="job-orders.php" class="dk" data-tip="Job Orders">
                 <i class="fas fa-briefcase"></i>
                 <span class="dk-lbl">RSF</span>
@@ -1141,8 +1137,12 @@ $newest_joined    = !empty($evaluators) ? date('M d', strtotime($evaluators[0]['
                 <i class="fas fa-chart-bar text-blue-300 text-base leading-none"></i>
                 <span class="dk-lbl">Analytics</span>
             </a>
+            <a href="user.php" class="dk active" data-tip="Evaluators">
+                <i class="fas fa-users-gear"></i>
+                <span class="dk-lbl">Evaluators</span>
+            </a>
             <div class="dk-div"></div>
-            <a href="settings.html" class="dk" data-tip="Settings">
+            <a href="settings.php" class="dk" data-tip="Settings">
                 <i class="fas fa-gear"></i>
                 <span class="dk-lbl">Settings</span>
             </a>
@@ -1191,14 +1191,32 @@ $newest_joined    = !empty($evaluators) ? date('M d', strtotime($evaluators[0]['
     </div>
 
     <script>
-        // Live date
-        document.getElementById('live-date').textContent =
-            new Date().toLocaleDateString('en-PH', {
+        /* ── Live date + time ────────────────────────────────────────────── */
+        function updateLiveDateTime() {
+            const el = document.getElementById('live-date');
+            if (!el) return;
+
+            const now = new Date();
+
+            const datePart = now.toLocaleDateString('en-PH', {
                 weekday: 'short',
                 year: 'numeric',
                 month: 'short',
                 day: 'numeric'
             }).toUpperCase();
+
+            const timePart = now.toLocaleTimeString('en-PH', {
+                hour: 'numeric',
+                minute: '2-digit',
+                second: '2-digit',
+                hour12: true
+            }).toLowerCase();
+
+            el.textContent = `${datePart} | ${timePart}`;
+        }
+
+        updateLiveDateTime();
+        setInterval(updateLiveDateTime, 1000); // refresh every second
 
         // Tab switching
         function switchTab(name, btn) {

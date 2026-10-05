@@ -1,9 +1,7 @@
 <?php
+//dashboard.php  –  DMW RO IV-A Admin Dashboard
+//Matches project structure from applications.php
 
-/**
- * dashboard.php  –  DMW RO IV-A Admin Dashboard
- * Matches project structure from applications.php
- */
 session_start();
 require_once '../db.php';
 
@@ -80,76 +78,6 @@ $initials = strtoupper(
             margin-top: 4px;
         }
 
-        /* Notification dropdown */
-        #notif-panel {
-            position: fixed;
-            top: 56px;
-            right: 12px;
-            width: 340px;
-            max-height: 480px;
-            overflow-y: auto;
-            background: var(--surface, #fff);
-            border: 1px solid var(--bdr, #e2e8f0);
-            border-radius: 12px;
-            box-shadow: 0 8px 32px rgba(0, 0, 0, .14);
-            z-index: 999;
-            display: none;
-        }
-
-        #notif-panel.open {
-            display: block;
-        }
-
-        .notif-item {
-            padding: 12px 16px;
-            border-bottom: 1px solid var(--bdr, #f1f5f9);
-            display: flex;
-            gap: 10px;
-            align-items: flex-start;
-            cursor: pointer;
-            transition: background .15s;
-        }
-
-        .notif-item:hover {
-            background: var(--surface2, #f8fafc);
-        }
-
-        .notif-item.unread {
-            background: rgba(29, 78, 216, .04);
-        }
-
-        .notif-dot-sm {
-            width: 8px;
-            height: 8px;
-            border-radius: 50%;
-            background: #3b82f6;
-            margin-top: 4px;
-            flex-shrink: 0;
-        }
-
-        .notif-dot-sm.read {
-            background: transparent;
-            border: 1.5px solid #cbd5e1;
-        }
-
-        .notif-title {
-            font-size: 12px;
-            font-weight: 700;
-            color: var(--text1, #0f172a);
-        }
-
-        .notif-msg {
-            font-size: 11px;
-            color: var(--text2, #475569);
-            margin-top: 2px;
-        }
-
-        .notif-time {
-            font-size: 10px;
-            color: var(--text3, #94a3b8);
-            margin-top: 3px;
-        }
-
         #job-list {
             max-height: 220px;
             /* fits ~3 job-item cards */
@@ -184,7 +112,7 @@ $initials = strtoupper(
 
 <body>
 
-    <!-- ── TOP BAR ──────────────────────────────────────────────────── -->
+    <!--  TOP BAR  -->
     <header class="topbar">
         <div class="topbar-brand">
             <img src="https://dmw.gov.ph/images/dmw_tahanan_ng_ofw_colored.png" alt="DMW" class="h-9">
@@ -198,28 +126,16 @@ $initials = strtoupper(
             <span class="topbar-date" id="live-date"></span>
 
             <!-- Notification bell -->
-            <div class="tb-btn" id="notif-btn" onclick="toggleNotifPanel(event)" style="position:relative">
+            <div class="tb-btn">
                 <i class="fas fa-bell"></i>
-                <span class="notif-dot" id="notif-badge" style="display:none"></span>
+                <span class="notif-dot"></span>
             </div>
-
-            <div class="tb-btn"><i class="fas fa-magnifying-glass"></i></div>
+            <!--    <div class="tb-btn"><i class="fas fa-magnifying-glass"></i></div>-->
             <div class="topbar-avatar"><?= htmlspecialchars($initials) ?></div>
         </div>
     </header>
 
-    <!-- Notification dropdown panel 
-    <div id="notif-panel">
-        <div style="padding:12px 16px;border-bottom:1px solid var(--bdr,#e2e8f0);display:flex;align-items:center;justify-content:space-between;">
-            <span style="font-weight:700;font-size:13px">Notifications</span>
-            <button onclick="markAllRead()" style="font-size:11px;color:#3b82f6;background:none;border:none;cursor:pointer">Mark all read</button>
-        </div>
-        <div id="notif-list">
-            <div style="padding:20px;text-align:center;color:#94a3b8;font-size:12px">Loading…</div>
-        </div>
-    </div>-->
-
-    <!-- ── SUBBAR ────────────────────────────────────────────────────── -->
+    <!--  SUBBAR  -->
     <div class="subbar">
         <div class="subbar-top">
             <div class="subbar-greeting">
@@ -231,6 +147,7 @@ $initials = strtoupper(
             <label class="filter-pill">
                 <i class="fas fa-calendar-alt" style="color:var(--blue-lt)"></i>
                 <select id="filter-month">
+                    <option value="">All Time</option>
                     <?php
                     for ($m = 1; $m <= 12; $m++) {
                         $val = date('Y') . '-' . str_pad($m, 2, '0', STR_PAD_LEFT);
@@ -271,7 +188,7 @@ $initials = strtoupper(
         </div>
     </div>
 
-    <!-- ── MAIN ──────────────────────────────────────────────────────── -->
+    <!--  MAIN  -->
     <div class="main">
 
         <!-- KPI Cards -->
@@ -421,14 +338,10 @@ $initials = strtoupper(
                 </div>
             </div>
             <div class="dk-div"></div>
-            <a href="user.php" class="dk" data-tip="Evaluators">
-                <i class="fas fa-users-gear"></i>
-                <span class="dk-lbl">Evaluators</span>
-            </a>
-            <a href="assignments.html" class="dk" data-tip="Assignments">
+            <!--<a href="assignments.html" class="dk" data-tip="Assignments">
                 <i class="fas fa-list-check"></i>
                 <span class="dk-lbl">Assign</span>
-            </a>
+            </a>-->
             <a href="job-orders.php" class="dk" data-tip="Job Orders">
                 <i class="fas fa-briefcase"></i>
                 <span class="dk-lbl">RSF</span>
@@ -441,8 +354,12 @@ $initials = strtoupper(
                 <i class="fas fa-chart-bar text-blue-300 text-base leading-none"></i>
                 <span class="dk-lbl">Analytics</span>
             </a>
+            <a href="user.php" class="dk" data-tip="Evaluators">
+                <i class="fas fa-users-gear"></i>
+                <span class="dk-lbl">Evaluators</span>
+            </a>
             <div class="dk-div"></div>
-            <a href="settings.html" class="dk" data-tip="Settings">
+            <a href="settings.php" class="dk" data-tip="Settings">
                 <i class="fas fa-gear"></i>
                 <span class="dk-lbl">Settings</span>
             </a>
@@ -454,7 +371,7 @@ $initials = strtoupper(
     </div>
 
 
-    <!-- ── JAVASCRIPT ────────────────────────────────────────────────── -->
+    <!--  JAVASCRIPT  -->
     <script>
         /* API endpoint — same folder as dashboard.php */
         const API = 'dashboard-api.php';
@@ -505,16 +422,178 @@ $initials = strtoupper(
             return `<b style="color:${col}">${sign} ${Math.abs(pct)}%</b> vs last mo.`;
         }
 
-        /* ── Live date ────────────────────────────────────────────────── */
-        document.getElementById('live-date').textContent =
-            new Date().toLocaleDateString('en-PH', {
+        /* Wraps a native <select> with a compact styled trigger + dropdown
+           panel, sized to sit inside a "filter-pill". The panel is appended
+           to <body> and positioned `fixed` (from the trigger's on-screen
+           position) so it never stretches .filter-scroll's horizontal
+           scrollbar. The original <select> stays in the DOM (hidden) and
+           its `id`, `.value`, and 'change' event all keep working exactly
+           as before — bindFilterPills() below needs zero changes. */
+        function enhancePillSelect(select) {
+            if (!select) return;
+
+            const wrapper = document.createElement('div');
+            wrapper.className = 'relative inline-flex items-center';
+            select.parentNode.insertBefore(wrapper, select);
+            wrapper.appendChild(select);
+            select.classList.add('hidden');
+            select.tabIndex = -1;
+
+            const trigger = document.createElement('button');
+            trigger.type = 'button';
+            trigger.setAttribute('aria-haspopup', 'listbox');
+            trigger.setAttribute('aria-expanded', 'false');
+            trigger.className = 'inline-flex items-center gap-1.5 bg-transparent border-none cursor-pointer p-0 m-0 font-inherit text-inherit';
+            trigger.innerHTML = '<span class="truncate max-w-[110px]"></span>' +
+                '<i class="fas fa-chevron-down text-[9px] opacity-60 transition-transform flex-shrink-0"></i>';
+            wrapper.appendChild(trigger);
+
+            const panel = document.createElement('div');
+            panel.setAttribute('role', 'listbox');
+            panel.className = 'hidden fixed w-56 bg-white border-[1.5px] border-[var(--border)] rounded-lg shadow-[0_10px_30px_rgba(11,31,75,.16)] z-[999] overflow-hidden py-1 max-h-[240px] overflow-y-auto';
+            document.body.appendChild(panel);
+
+            function buildRow(optionEl) {
+                const row = document.createElement('div');
+                row.setAttribute('role', 'option');
+                row.className = 'flex items-center justify-between gap-2 py-[7px] px-3 text-[12px] text-[var(--text1)] cursor-pointer hover:bg-[#f1f5fb] transition-colors';
+                row.dataset.value = optionEl.value;
+                const label = document.createElement('span');
+                label.className = 'truncate';
+                label.textContent = optionEl.textContent;
+                row.appendChild(label);
+                row.addEventListener('click', () => {
+                    select.value = optionEl.value;
+                    closePanel();
+                    refresh();
+                    select.dispatchEvent(new Event('change', {
+                        bubbles: true
+                    }));
+                });
+                return row;
+            }
+
+            function renderList() {
+                panel.innerHTML = '';
+                Array.from(select.options).forEach(opt => panel.appendChild(buildRow(opt)));
+                markSelected();
+            }
+
+            function markSelected() {
+                panel.querySelectorAll('[role="option"]').forEach(row => {
+                    const selected = row.dataset.value === select.value;
+                    row.classList.toggle('bg-[#eff6ff]', selected);
+                    row.classList.toggle('text-[var(--navy)]', selected);
+                    row.classList.toggle('font-bold', selected);
+                    let check = row.querySelector('.fa-check');
+                    if (selected && !check) {
+                        const icon = document.createElement('i');
+                        icon.className = 'fas fa-check text-[10px] text-[var(--blue)] flex-shrink-0';
+                        row.appendChild(icon);
+                    } else if (!selected && check) {
+                        check.remove();
+                    }
+                });
+            }
+
+            function refresh() {
+                const opt = select.options[select.selectedIndex];
+                trigger.querySelector('span').textContent = opt ? opt.textContent : '';
+                markSelected();
+            }
+
+            function positionPanel() {
+                const rect = trigger.getBoundingClientRect();
+                const panelWidth = 224;
+                let left = rect.left;
+                const maxLeft = window.innerWidth - panelWidth - 8;
+                if (left > maxLeft) left = Math.max(8, maxLeft);
+                panel.style.top = (rect.bottom + 6) + 'px';
+                panel.style.left = left + 'px';
+            }
+
+            function onReposition() {
+                if (!panel.classList.contains('hidden')) positionPanel();
+            }
+
+            function openPanel() {
+                document.querySelectorAll('[role="listbox"]').forEach(p => {
+                    if (p !== panel) p.classList.add('hidden');
+                });
+                renderList();
+                positionPanel();
+                panel.classList.remove('hidden');
+                trigger.setAttribute('aria-expanded', 'true');
+                trigger.querySelector('.fa-chevron-down').classList.add('rotate-180');
+                window.addEventListener('scroll', onReposition, true);
+                window.addEventListener('resize', onReposition);
+            }
+
+            function closePanel() {
+                panel.classList.add('hidden');
+                trigger.setAttribute('aria-expanded', 'false');
+                trigger.querySelector('.fa-chevron-down').classList.remove('rotate-180');
+                window.removeEventListener('scroll', onReposition, true);
+                window.removeEventListener('resize', onReposition);
+            }
+
+            trigger.addEventListener('click', (e) => {
+                e.stopPropagation();
+                panel.classList.contains('hidden') ? openPanel() : closePanel();
+            });
+            trigger.addEventListener('keydown', (e) => {
+                if (['Enter', ' ', 'ArrowDown'].includes(e.key)) {
+                    e.preventDefault();
+                    openPanel();
+                }
+            });
+            panel.addEventListener('keydown', (e) => {
+                if (e.key === 'Escape') {
+                    closePanel();
+                    trigger.focus();
+                }
+            });
+            panel.addEventListener('click', (e) => e.stopPropagation());
+            document.addEventListener('click', closePanel);
+
+            refresh();
+
+            // Exposed so callers (e.g. after loadFilterOptions() repopulates
+            // filter-job / filter-country with fresh <option>s) can refresh
+            // the trigger label if needed.
+            select._pillRefresh = refresh;
+        }
+        /*  Live date + time  */
+        function updateLiveDateTime() {
+            const el = document.getElementById('live-date');
+            if (!el) return;
+
+            const now = new Date();
+
+            const datePart = now.toLocaleDateString('en-PH', {
                 weekday: 'short',
                 year: 'numeric',
                 month: 'short',
                 day: 'numeric'
             }).toUpperCase();
 
-        /* ── 0. Populate filter pills (job types + destinations), once ─── */
+            const timePart = now.toLocaleTimeString('en-PH', {
+                hour: 'numeric',
+                minute: '2-digit',
+                second: '2-digit',
+                hour12: true
+            }).toLowerCase();
+
+            el.textContent = `${datePart} | ${timePart}`;
+        }
+
+        updateLiveDateTime();
+        setInterval(updateLiveDateTime, 1000); // refresh every second
+
+        updateLiveDateTime();
+        setInterval(updateLiveDateTime, 60_000); // refresh every minute
+
+        /*  0. Populate filter pills (job types + destinations), once  */
         async function loadFilterOptions() {
             const [jobTypes, dest] = await Promise.all([
                 api('job_types'),
@@ -548,7 +627,7 @@ $initials = strtoupper(
             ]).catch(err => console.error('Dashboard filter error:', err));
         }
 
-        /* ── 1. KPI Stats ─────────────────────────────────────────────── */
+        /*  1. KPI Stats  */
         async function loadStats() {
             const d = await api('stats', getFilters());
 
@@ -591,7 +670,7 @@ $initials = strtoupper(
             }
         }
 
-        /* ── 2. Monthly bar chart ─────────────────────────────────────── */
+        /*  2. Monthly bar chart  */
         async function loadMonthly() {
             const d = await api('monthly', getFilters());
 
@@ -669,7 +748,7 @@ $initials = strtoupper(
             });
         }
 
-        /* ── 3. Status breakdown bars ─────────────────────────────────── */
+        /*  3. Status breakdown bars  */
         async function loadStatus() {
             const items = await api('status', getFilters());
             const maxCnt = Math.max(...items.map(s => s.count), 1);
@@ -690,7 +769,7 @@ $initials = strtoupper(
             });
         }
 
-        /* ── 4. Active job orders ─────────────────────────────────────── */
+        /*  4. Active job orders  */
         const JOB_GRADIENTS = [
             ['#059669', '#34d399'],
             ['#1d4ed8', '#60a5fa'],
@@ -737,7 +816,7 @@ $initials = strtoupper(
             });
         }
 
-        /* ── 5. Destination doughnut ──────────────────────────────────── */
+        /*  5. Destination doughnut  */
         async function loadPie() {
             const d = await api('destinations', getFilters());
 
@@ -789,55 +868,7 @@ $initials = strtoupper(
             });
         }
 
-        /* ── 6. Notifications ─────────────────────────────────────────── */
-        async function loadNotifications() {
-            const d = await api('notifications');
-            const badge = document.getElementById('notif-badge');
-            const list = document.getElementById('notif-list');
-
-            if (d.unread > 0) badge.style.display = '';
-
-            if (!d.items.length) {
-                list.innerHTML = '<div style="padding:20px;text-align:center;color:#94a3b8;font-size:12px">No notifications</div>';
-                return;
-            }
-
-            list.innerHTML = d.items.map(n => `
-    <div class="notif-item ${n.is_read ? '' : 'unread'}" onclick="openApp(${n.application_id ?? 'null'})">
-        <span class="notif-dot-sm ${n.is_read ? 'read' : ''}"></span>
-        <div>
-            <div class="notif-title">${n.title}</div>
-            <div class="notif-msg">${n.message}</div>
-            <div class="notif-time">${n.time_ago}</div>
-        </div>
-    </div>`).join('');
-        }
-
-        function toggleNotifPanel(e) {
-            e.stopPropagation();
-            document.getElementById('notif-panel').classList.toggle('open');
-        }
-
-        function openApp(id) {
-            if (id) location.href = `applications.php?id=${id}`;
-        }
-
-        function markAllRead() {
-            fetch(`${API}?action=mark_read`, {
-                method: 'POST'
-            });
-            document.querySelectorAll('.notif-item').forEach(el => el.classList.remove('unread'));
-            document.getElementById('notif-badge').style.display = 'none';
-        }
-
-        document.addEventListener('click', e => {
-            const panel = document.getElementById('notif-panel');
-            if (!panel.contains(e.target) && e.target.id !== 'notif-btn') {
-                panel.classList.remove('open');
-            }
-        });
-
-        /* ── Dock flyout (same as applications.php) ───────────────────── */
+        /*  Dock flyout (same as applications.php)  */
         function toggleFlyout(e, id) {
             e.stopPropagation();
             const el = document.getElementById(id);
@@ -849,7 +880,9 @@ $initials = strtoupper(
             document.querySelectorAll('.flyout').forEach(f => f.classList.remove('open'));
         });
 
-        /* ── Init: load everything in parallel ───────────────────────── */
+        /*  Init: load everything in parallel  */
+        ['filter-month', 'filter-province', 'filter-job', 'filter-country']
+        .forEach(id => enhancePillSelect(document.getElementById(id)));
         bindFilterPills();
         Promise.all([
             loadFilterOptions(),
@@ -858,17 +891,14 @@ $initials = strtoupper(
             loadStatus(),
             loadJobOrders(),
             loadPie(),
-            loadNotifications(),
         ]).catch(err => console.error('Dashboard error:', err));
 
-        /* Auto-refresh KPIs + notifications every 60 s */
+        /* Auto-refresh KPIs every 60 s */
         setInterval(() => {
             loadStats();
             loadStatus();
-            loadNotifications();
         }, 60_000);
     </script>
-
     <script type="module" src="../js/main.js"></script>
     <?php include '../includes/login_toast.php'; ?>
 </body>

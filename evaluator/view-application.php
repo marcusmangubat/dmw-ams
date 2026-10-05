@@ -3,6 +3,7 @@
 session_start();
 require_once '../db.php';
 require_once '../includes/app-helpers.php';
+require_once '../includes/matching.php';
 
 if (!isset($_SESSION['user_email']) || ($_SESSION['user_type'] ?? '') !== 'evaluator') {
     header('Location: ../login.php');
@@ -145,12 +146,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                     "Application {$decisionLabel}",
                     $notifyMsg
                 );
-
                 // Notify admins — for_compliance specifically hands them the case
                 notify_admins(
                     $database,
                     $decision === 'for_compliance' ? 'Application Needs Compliance Review' : "Application {$decisionLabel}",
-                    "Application #$app_id has been {$decisionLabel} by evaluator. " . ($comments ? "Note: {$comments}" : ''),
+                    get_applicant_name($database, $app_id) . "'s application has been {$decisionLabel} by evaluator. " . ($comments ? "Note: {$comments}" : ''),
                     $decision === 'for_compliance' ? 'compliance_handoff' : 'evaluation_complete',
                     $app_id
                 );
@@ -175,7 +175,7 @@ $stmt = $database->prepare("
     SELECT a.id, a.status, a.updated_at, a.submitted_at, a.notes,
            r.rsf_number, r.position_title, r.worksite_country, r.employer_name, r.qualifications, r.slots_available,
            CONCAT(c.first_name, ' ', c.last_name) AS applicant_name,
-           c.email AS applicant_email, c.phone, c.address
+           c.email AS applicant_email, c.phone, c.address, c.profile_picture
     FROM applications a
     JOIN rsf_job_orders r ON a.rsf_id = r.id
     LEFT JOIN clients   c ON a.client_id = c.cid
@@ -191,6 +191,158 @@ if (!$app) {
     exit;
 }
 
+// ── Applicant Fit: eligibility + preference match (live-recomputed) ──
+// Reuses the exact same functions client/jobs.php uses, so the evaluator
+// sees identical logic to what the applicant saw when browsing — just
+// computed fresh against the applicant's current profile, not a stale
+// snapshot from when they applied.
+$stmt = $database->prepare("SELECT client_id, rsf_id FROM applications WHERE id = ? LIMIT 1");
+$stmt->bind_param("i", $app_id);
+$stmt->execute();
+$appIds = $stmt->get_result()->fetch_assoc();
+$stmt->close();
+$fit_client_id = (int) ($appIds['client_id'] ?? 0);
+$fit_rsf_id    = (int) ($appIds['rsf_id'] ?? 0);
+
+$fitClientData         = null;
+$fitClientAge          = null;
+$fitClientDegrees      = [];
+$fitClientLicenseNames = [];
+$fitClientSkillMap     = [];
+$fitHasPreferences     = false;
+$fitMatchDetails       = null;
+$fitQualChecks         = [];
+$fitHasQuals           = false;
+$fitEligible           = true;
+
+if ($fit_client_id && $fit_rsf_id) {
+    $stmt = $database->prepare("
+        SELECT c.dob, c.gender,
+               cp.civil_status, cp.height_cm, cp.weight_kg, cp.educational_attainment,
+               cp.degree_id, cp.course_degree, dp.degree_name AS profile_degree_name
+        FROM clients c
+        LEFT JOIN client_profiles cp ON cp.client_id = c.cid
+        LEFT JOIN degree_programs dp ON dp.id = cp.degree_id
+        WHERE c.cid = ?
+        LIMIT 1
+    ");
+    $stmt->bind_param("i", $fit_client_id);
+    $stmt->execute();
+    $fitClientData = $stmt->get_result()->fetch_assoc();
+    $stmt->close();
+
+    if (!empty($fitClientData['dob'])) {
+        $fitClientAge = (int) date_diff(date_create($fitClientData['dob']), date_create('today'))->y;
+    }
+
+    $fitClientDegrees = array_values(array_filter(array_unique([
+        trim((string) ($fitClientData['profile_degree_name'] ?? '')),
+        trim((string) ($fitClientData['course_degree'] ?? '')),
+    ])));
+
+    $stmt = $database->prepare("
+        SELECT cs.skill_id, cs.proficiency_level
+        FROM client_skills cs
+        WHERE cs.client_id = ?
+    ");
+    $stmt->bind_param("i", $fit_client_id);
+    $stmt->execute();
+    foreach ($stmt->get_result()->fetch_all(MYSQLI_ASSOC) as $cs) {
+        $fitClientSkillMap[(int) $cs['skill_id']] = $cs['proficiency_level'];
+    }
+    $stmt->close();
+
+    $stmt = $database->prepare("
+        SELECT pl.license_name
+        FROM client_licenses cl
+        INNER JOIN professional_licenses pl ON pl.id = cl.license_id
+        WHERE cl.client_id = ?
+    ");
+    $stmt->bind_param("i", $fit_client_id);
+    $stmt->execute();
+    $fitClientLicenseNames = array_column($stmt->get_result()->fetch_all(MYSQLI_ASSOC), 'license_name');
+    $stmt->close();
+
+    $stmt = $database->prepare("SELECT qualification_type, qualification_value FROM rsf_qualifications WHERE rsf_id = ?");
+    $stmt->bind_param("i", $fit_rsf_id);
+    $stmt->execute();
+    $fitJobQuals = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+    $stmt->close();
+    $fitHasQuals = !empty($fitJobQuals);
+
+    $qualCheck = ($fitHasQuals && $fitClientData)
+        ? checkQualifications($fitClientData, $fitClientAge, $fitJobQuals, $fitClientDegrees, $fitClientLicenseNames)
+        : ['eligible' => true, 'checks' => [], 'reasons' => []];
+    $fitEligible   = $qualCheck['eligible'];
+    $fitQualChecks = $qualCheck['checks'];
+
+    $stmt = $database->prepare("
+        SELECT cp.preferred_classification, cp.salary_range_id, cp.preferred_employment_type,
+               sr.min_salary, sr.max_salary, sr.range_label
+        FROM client_preferences cp
+        LEFT JOIN salary_ranges sr ON sr.id = cp.salary_range_id
+        WHERE cp.client_id = ?
+        LIMIT 1
+    ");
+    $stmt->bind_param("i", $fit_client_id);
+    $stmt->execute();
+    $fitClientPrefs    = $stmt->get_result()->fetch_assoc();
+    $fitHasPreferences = (bool) $fitClientPrefs;
+    $stmt->close();
+
+    if ($fitHasPreferences) {
+        $stmt = $database->prepare("SELECT country, priority_order FROM client_preferred_countries WHERE client_id = ? ORDER BY priority_order ASC");
+        $stmt->bind_param("i", $fit_client_id);
+        $stmt->execute();
+        $fitPrefCountries = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+        $stmt->close();
+
+        $stmt = $database->prepare("
+            SELECT cpp.subcategory_id, cpp.priority_order, js.subcategory_name
+            FROM client_preferred_positions cpp
+            JOIN job_subcategories js ON js.id = cpp.subcategory_id
+            WHERE cpp.client_id = ?
+            ORDER BY cpp.priority_order ASC
+        ");
+        $stmt->bind_param("i", $fit_client_id);
+        $stmt->execute();
+        $fitPrefPositions = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+        $stmt->close();
+
+        $stmt = $database->prepare("SELECT * FROM rsf_job_orders WHERE id = ? LIMIT 1");
+        $stmt->bind_param("i", $fit_rsf_id);
+        $stmt->execute();
+        $fitJobRow = $stmt->get_result()->fetch_assoc();
+        $stmt->close();
+
+        $stmt = $database->prepare("
+            SELECT rs.skill_id, s.skill_name, rs.importance, rs.min_proficiency
+            FROM rsf_required_skills rs
+            INNER JOIN skills s ON s.id = rs.skill_id
+            WHERE rs.rsf_id = ?
+        ");
+        $stmt->bind_param("i", $fit_rsf_id);
+        $stmt->execute();
+        $fitJobSkills = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+        $stmt->close();
+
+        $fitJobRequiredDegrees = array_values(array_map(
+            fn($q) => $q['qualification_value'],
+            array_filter($fitJobQuals, fn($q) => $q['qualification_type'] === 'required_degree')
+        ));
+
+        $fitMatchDetails = computeMatchDetails(
+            $fitJobRow,
+            $fitClientPrefs,
+            $fitPrefCountries,
+            $fitPrefPositions,
+            $fitClientSkillMap,
+            $fitJobSkills,
+            $fitClientDegrees,
+            $fitJobRequiredDegrees
+        );
+    }
+}
 // Notify the applicant the first time this case is claimed (not on every
 // subsequent visit by the same evaluator).
 if (empty($claim['already_owned'])) {
@@ -300,6 +452,14 @@ $anp    = explode(' ', trim($app['applicant_name'] ?? ''));
 $appAvi = strtoupper(count($anp) >= 2
     ? substr($anp[0], 0, 1) . substr(end($anp), 0, 1)
     : substr($app['applicant_name'] ?? 'NA', 0, 2));
+
+$app_has_pic = !empty($app['profile_picture']);
+$app_pic_url = $app_has_pic ? '../' . $app['profile_picture'] : null;
+
+// Does this application currently accept a new evaluation? (drives whether
+// the eval panel / doc-comment forms render, and whether it belongs in the
+// sticky action rail)
+$isActionable = in_array($app['status'], ['assign', 'assigned', 'under_evaluation', 'resubmitted'], true);
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -307,9 +467,8 @@ $appAvi = strtoupper(count($anp) >= 2
 <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Application #<?= $app_id ?> – Evaluator Portal</title>
+    <title>Application <?= htmlspecialchars($app['applicant_name'] ?? 'Applicant') ?> Evaluator Portal</title>
     <link rel="icon" type="image/png" href="https://dmw.gov.ph/images/dmw_tahanan_ng_ofw_colored.png">
-
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800&family=DM+Serif+Display&display=swap" rel="stylesheet">
@@ -324,7 +483,139 @@ $appAvi = strtoupper(count($anp) >= 2
             display: block;
             background: transparent;
             filter: none;
+        }
 
+        /* ════════════════════════════════════════════════════════
+           LAYOUT OPTIMIZATION — tighter spacing + responsive
+           two-column desktop layout so the eval action rail stays
+           in view instead of forcing a scroll to the bottom.
+           Nothing here removes or renames any existing class; it
+           only refines spacing/structure and adds .content-grid /
+           .col-left / .col-right wrapper rules.
+        ════════════════════════════════════════════════════════ */
+
+        .main {
+            max-width: 1360px;
+            margin: 0 auto;
+            padding-top: 18px;
+        }
+
+        .page-hd {
+            margin-bottom: 12px;
+        }
+
+        .alert {
+            margin-bottom: 12px;
+        }
+
+        .content-grid {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) 380px;
+            gap: 16px;
+            align-items: start;
+        }
+
+        .col-left,
+        .col-right {
+            display: flex;
+            flex-direction: column;
+            gap: 14px;
+            min-width: 0;
+        }
+
+        .col-right {
+            position: sticky;
+            top: 16px;
+        }
+
+        /* Tighten card chrome */
+        .sec-card,
+        .eval-panel {
+            margin: 0;
+        }
+
+        .sec-card-head {
+            padding: 11px 16px;
+            gap: 8px;
+        }
+
+        .sec-card-body {
+            padding: 14px 16px;
+        }
+
+        .applicant-hero {
+            padding: 14px 16px;
+            gap: 12px;
+        }
+
+        /* Denser, self-wrapping detail grid instead of a fixed 2-col
+           layout that leaves empty gaps on wide screens */
+        .dl-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+            gap: 10px 18px;
+        }
+
+        .dl-full {
+            grid-column: 1 / -1;
+        }
+
+        .qa-item {
+            padding: 9px 0;
+        }
+
+        .qa-item:not(:last-child) {
+            border-bottom: 1px solid var(--border);
+        }
+
+        .doc-row {
+            padding: 8px 0;
+        }
+
+        .tl-item {
+            padding-bottom: 8px;
+        }
+
+        .timestamps {
+            margin-top: 6px;
+            padding-top: 12px;
+            border-top: 1px solid var(--border);
+        }
+
+        /* Collapse to single column below desktop width; the sticky
+           sidebar becomes a normal stacked block in original page order */
+        @media (max-width: 1080px) {
+            .content-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .col-right {
+                position: static;
+            }
+        }
+
+        @media (max-width: 640px) {
+            .main {
+                padding-left: 12px;
+                padding-right: 12px;
+            }
+
+            .sec-card-head,
+            .sec-card-body,
+            .applicant-hero {
+                padding: 12px;
+            }
+
+            .dl-grid {
+                grid-template-columns: repeat(2, 1fr);
+                gap: 8px 12px;
+            }
+        }
+
+        @media (max-width: 420px) {
+            .dl-grid {
+                grid-template-columns: 1fr;
+            }
         }
     </style>
 </head>
@@ -349,7 +640,7 @@ $appAvi = strtoupper(count($anp) >= 2
                 <i class="fas fa-bell"></i>
                 <span class="notif-dot"></span>
             </div>
-            <div class="tb-btn"><i class="fas fa-magnifying-glass"></i></div>
+            <!--  <div class="tb-btn"><i class="fas fa-magnifying-glass"></i></div>-->
             <div class="topbar-avatar"><?= htmlspecialchars($initials) ?></div>
         </div>
     </header>
@@ -397,258 +688,382 @@ $appAvi = strtoupper(count($anp) >= 2
             </div>
         <?php endif; ?>
 
-        <!-- ── APPLICANT INFO ── -->
-        <div class="sec-card fade-in d2">
-            <div class="applicant-hero">
-                <div class="applicant-avi"><?= htmlspecialchars($appAvi) ?></div>
-                <div class="applicant-hero-info">
-                    <div class="applicant-hero-name"><?= htmlspecialchars($app['applicant_name'] ?? '—') ?></div>
-                    <div class="applicant-hero-sub"><?= htmlspecialchars($app['applicant_email'] ?? '—') ?></div>
-                    <div class="applicant-hero-sub" style="margin-top:1px"><?= htmlspecialchars($app['phone'] ?? '—') ?></div>
-                </div>
-                <span class="status-pill <?= $statusPill ?>"><?= htmlspecialchars($statusText) ?></span>
-            </div>
-            <?php if (!empty($app['address'])): ?>
-                <div style="padding: 0 16px 14px;">
-                    <dt style="font-size:9.5px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--text3);margin-bottom:3px;">Address</dt>
-                    <dd style="font-size:12.5px;font-weight:500;color:var(--text2);"><?= htmlspecialchars($app['address']) ?></dd>
-                </div>
-            <?php endif; ?>
-        </div>
+        <div class="content-grid">
+            <!-- ══════════════════ LEFT: case details ══════════════════ -->
+            <div class="col-left">
 
-        <!-- ── JOB ORDER (RSF) ── -->
-        <div class="sec-card fade-in d3">
-            <div class="sec-card-head">
-                <div class="sec-card-head-icon" style="background:#eff6ff;color:var(--blue);">
-                    <i class="fas fa-briefcase"></i>
-                </div>
-                <span class="sec-card-title">Job Order (RSF)</span>
-            </div>
-            <div class="sec-card-body">
-                <div class="dl-grid">
-                    <div class="dl-item">
-                        <dt>RSF Number</dt>
-                        <dd style="color:var(--blue)"><?= htmlspecialchars($app['rsf_number'] ?? '—') ?></dd>
-                    </div>
-                    <div class="dl-item">
-                        <dt>Position Title</dt>
-                        <dd><?= htmlspecialchars($app['position_title'] ?? '—') ?></dd>
-                    </div>
-                    <div class="dl-item">
-                        <dt>Employer</dt>
-                        <dd><?= htmlspecialchars($app['employer_name'] ?? '—') ?></dd>
-                    </div>
-                    <div class="dl-item">
-                        <dt>Country</dt>
-                        <dd><?= htmlspecialchars($app['worksite_country'] ?? '—') ?></dd>
-                    </div>
-                    <?php if (!empty($app['slots_available'])): ?>
-                        <div class="dl-item">
-                            <dt>Slots Available</dt>
-                            <dd><?= (int)$app['slots_available'] ?></dd>
+                <!-- ── APPLICANT INFO ── -->
+                <div class="sec-card fade-in d2">
+                    <div class="applicant-hero">
+                        <div class="applicant-avi" <?= $app_has_pic ? "style=\"background-image:url('" . htmlspecialchars($app_pic_url) . "');background-size:cover;background-position:center;\"" : '' ?>>
+                            <?= $app_has_pic ? '' : htmlspecialchars($appAvi) ?>
                         </div>
-                    <?php endif; ?>
-                    <?php if (!empty($app['qualifications'])): ?>
-                        <div class="dl-item dl-full">
-                            <dt>Qualifications</dt>
-                            <dd style="white-space:pre-wrap;font-weight:500;font-size:12.5px;"><?= htmlspecialchars($app['qualifications']) ?></dd>
+                        <div class="applicant-hero-info">
+                            <div class="applicant-hero-name"><?= htmlspecialchars($app['applicant_name'] ?? '—') ?></div>
+                            <div class="applicant-hero-sub"><?= htmlspecialchars($app['applicant_email'] ?? '—') ?></div>
+                            <div class="applicant-hero-sub" style="margin-top:1px"><?= htmlspecialchars($app['phone'] ?? '—') ?></div>
+                        </div>
+                        <span class="status-pill <?= $statusPill ?>"><?= htmlspecialchars($statusText) ?></span>
+                    </div>
+                    <?php if (!empty($app['address'])): ?>
+                        <div style="padding: 0 16px 14px;">
+                            <dt style="font-size:9.5px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--text3);margin-bottom:3px;">Address</dt>
+                            <dd style="font-size:12.5px;font-weight:500;color:var(--text2);"><?= htmlspecialchars($app['address']) ?></dd>
                         </div>
                     <?php endif; ?>
                 </div>
-            </div>
-        </div>
 
-        <!-- ── QUESTION ANSWERS ── -->
-        <?php if (!empty($answers)): ?>
-            <div class="sec-card fade-in d4">
-                <div class="sec-card-head">
-                    <div class="sec-card-head-icon" style="background:#eef2ff;color:var(--indigo);">
-                        <i class="fas fa-list-ul"></i>
-                    </div>
-                    <span class="sec-card-title">Question Answers</span>
-                </div>
-                <div class="sec-card-body">
-                    <?php foreach ($answers as $a): ?>
-                        <div class="qa-item">
-                            <div class="qa-question"><?= htmlspecialchars($a['question_text']) ?></div>
-                            <div class="qa-answer"><?= nl2br(htmlspecialchars($a['answer'] ?? '—')) ?></div>
+                <!-- ── JOB ORDER (RSF) ── -->
+                <div class="sec-card fade-in d3">
+                    <div class="sec-card-head">
+                        <div class="sec-card-head-icon" style="background:#eff6ff;color:var(--blue);">
+                            <i class="fas fa-briefcase"></i>
                         </div>
-                    <?php endforeach; ?>
-                </div>
-            </div>
-        <?php endif; ?>
-
-        <!-- ── DOCUMENTS ── -->
-        <?php if (!empty($documents)): ?>
-            <div class="sec-card fade-in d4">
-                <div class="sec-card-head">
-                    <div class="sec-card-head-icon" style="background:#eff6ff;color:var(--blue);">
-                        <i class="fas fa-folder-open"></i>
+                        <span class="sec-card-title">Job Order (RSF)</span>
                     </div>
-                    <span class="sec-card-title">Uploaded Documents</span>
-                    <span style="margin-left:auto;font-size:10px;font-weight:700;color:var(--text3);"><?= count($documents) ?> file<?= count($documents) !== 1 ? 's' : '' ?></span>
-                </div>
-                <div class="sec-card-body">
-                    <?php foreach ($documents as $d): ?>
-                        <div class="doc-row">
-                            <div class="doc-row-left">
-                                <div class="doc-icon"><i class="fas fa-file-lines"></i></div>
-                                <div>
-                                    <div class="doc-name"><?= htmlspecialchars($d['file_name']) ?></div>
-                                    <div class="doc-type"><?= htmlspecialchars($d['document_type']) ?></div>
-                                </div>
+                    <div class="sec-card-body">
+                        <div class="dl-grid">
+                            <div class="dl-item">
+                                <dt>RSF Number</dt>
+                                <dd style="color:var(--blue)"><?= htmlspecialchars($app['rsf_number'] ?? '—') ?></dd>
                             </div>
-                            <?php if (!empty($d['file_path'])):
-                                $docExt = strtolower(pathinfo($d['file_path'], PATHINFO_EXTENSION));
-                            ?>
-                                <button type="button" class="doc-view-btn"
-                                    onclick="openDocPreview('../<?= htmlspecialchars($d['file_path']) ?>', '<?= htmlspecialchars(addslashes($d['file_name'])) ?>', '<?= htmlspecialchars($docExt) ?>')">
-                                    <i class="fas fa-eye"></i> Preview
-                                </button>
+                            <div class="dl-item">
+                                <dt>Position Title</dt>
+                                <dd><?= htmlspecialchars($app['position_title'] ?? '—') ?></dd>
+                            </div>
+                            <div class="dl-item">
+                                <dt>Employer</dt>
+                                <dd><?= htmlspecialchars($app['employer_name'] ?? '—') ?></dd>
+                            </div>
+                            <div class="dl-item">
+                                <dt>Country</dt>
+                                <dd><?= htmlspecialchars($app['worksite_country'] ?? '—') ?></dd>
+                            </div>
+                            <?php if (!empty($app['slots_available'])): ?>
+                                <div class="dl-item">
+                                    <dt>Slots Available</dt>
+                                    <dd><?= (int)$app['slots_available'] ?></dd>
+                                </div>
+                            <?php endif; ?>
+                            <?php if (!empty($app['qualifications'])): ?>
+                                <div class="dl-item dl-full">
+                                    <dt>Qualifications</dt>
+                                    <dd style="white-space:pre-wrap;font-weight:500;font-size:12.5px;"><?= htmlspecialchars($app['qualifications']) ?></dd>
+                                </div>
                             <?php endif; ?>
                         </div>
-                        <?php $docComments = $docCommentsByDocumentId[(int)$d['id']] ?? []; ?>
-                        <?php if (!empty($docComments)): ?>
-                            <div style="margin:8px 0 10px 46px;padding:8px 10px;border:1px solid var(--border);border-radius:10px;background:var(--surface);">
-                                <div style="font-size:10px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--text3);margin-bottom:6px;">Document comments</div>
-                                <?php foreach ($docComments as $c): ?>
-                                    <div style="padding:6px 0;border-top:1px dashed var(--border);">
-                                        <div style="font-size:11px;color:var(--text3);font-weight:600;">
-                                            <?= htmlspecialchars($c['commenter_name'] ?? $c['commented_by']) ?>
-                                            · <?= date('M d, Y • g:i a', strtotime($c['created_at'])) ?>
+                    </div>
+                </div>
+
+                <!-- ── APPLICANT FIT & ELIGIBILITY (live-recomputed) ── -->
+                <?php if ($fit_client_id && $fit_rsf_id): ?>
+                    <div class="sec-card fade-in d3">
+                        <div class="sec-card-head">
+                            <div class="sec-card-head-icon" style="background:#fef9c3;color:#a16207;">
+                                <i class="fas fa-clipboard-check"></i>
+                            </div>
+                            <span class="sec-card-title">Applicant Fit &amp; Eligibility</span>
+                            <span style="margin-left:auto;font-size:9.5px;font-weight:700;color:var(--text3);">
+                                <i class="fas fa-rotate"></i> Live — reflects applicant's current profile
+                            </span>
+                        </div>
+                        <div class="sec-card-body">
+
+                            <div style="margin-bottom:<?= $fitHasPreferences ? '18px' : '0' ?>;">
+                                <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;flex-wrap:wrap;">
+                                    <span style="font-size:11.5px;font-weight:800;color:var(--text1);text-transform:uppercase;letter-spacing:.04em;">Eligibility Requirements</span>
+                                    <?php if ($fitHasQuals): ?>
+                                        <span class="status-pill <?= $fitEligible ? 'sp-approved' : 'sp-disapproved' ?>">
+                                            <?= $fitEligible ? 'Meets Requirements' : 'Requirements Not Met' ?>
+                                        </span>
+                                    <?php endif; ?>
+                                </div>
+
+                                <?php if (!$fitHasQuals): ?>
+                                    <p style="font-size:12px;color:var(--text3);margin:0;">This job order has no specific structured eligibility requirements posted.</p>
+                                <?php else: ?>
+                                    <?php foreach ($fitQualChecks as $c): ?>
+                                        <div style="display:flex;gap:9px;padding:6px 0;border-bottom:1px solid var(--border);">
+                                            <span style="color:<?= $c['met'] ? '#059669' : '#dc2626' ?>;font-weight:800;width:16px;text-align:center;flex-shrink:0;">
+                                                <?= $c['met'] ? '✓' : '✕' ?>
+                                            </span>
+                                            <div>
+                                                <div style="font-size:12px;font-weight:700;color:var(--text1);"><?= htmlspecialchars($c['label']) ?></div>
+                                                <div style="font-size:11.5px;color:var(--text3);line-height:1.5;"><?= htmlspecialchars($c['detail']) ?></div>
+                                            </div>
                                         </div>
-                                        <div style="font-size:12px;color:var(--text2);line-height:1.5;"><?= nl2br(htmlspecialchars($c['comment'])) ?></div>
-                                    </div>
-                                <?php endforeach; ?>
-                            </div>
-                        <?php endif; ?>
-                        <?php if (in_array($app['status'], ['assign', 'assigned', 'under_evaluation', 'resubmitted'], true)): ?>
-                            <form method="POST" style="margin:0 0 14px 46px;display:flex;gap:8px;flex-wrap:wrap;align-items:flex-start;">
-                                <input type="hidden" name="action" value="add_doc_comment">
-                                <input type="hidden" name="document_id" value="<?= (int)$d['id'] ?>">
-                                <textarea name="doc_comment" required
-                                    placeholder="Add document-specific comment for applicant..."
-                                    style="flex:1;min-width:220px;min-height:42px;border:1px solid var(--border);border-radius:9px;padding:8px 10px;font-size:12px;font-family:'DM Sans',sans-serif;resize:vertical;"></textarea>
-                                <button type="submit" class="doc-view-btn" style="border:none;cursor:pointer;">
-                                    <i class="fas fa-comment-dots"></i> Add Comment
-                                </button>
-                            </form>
-                        <?php endif; ?>
-                    <?php endforeach; ?>
-                </div>
-            </div>
-        <?php endif; ?>
-
-        <!-- ── EVALUATION FORM ── -->
-        <?php if (in_array($app['status'], ['assign', 'assigned', 'under_evaluation', 'resubmitted'], true)): ?>
-            <div class="eval-panel fade-in d5">
-                <div class="eval-panel-head">
-                    <div class="eval-panel-head-icon"><i class="fas fa-gavel"></i></div>
-                    <span class="eval-panel-title">Submit Evaluation</span>
-                </div>
-                <div class="eval-panel-body">
-                    <form method="POST" id="evalForm">
-                        <input type="hidden" name="action" value="evaluate">
-                        <input type="hidden" name="decision" id="decisionInput" value="">
-
-                        <label style="display:block;font-size:10.5px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--text2);margin-bottom:7px;">
-                            Comments <span style="font-weight:500;color:var(--text3)"></span>
-                        </label>
-                        <textarea name="comments" class="eval-textarea" required
-                            placeholder="Add notes for the applicant or admin..."><?= htmlspecialchars($app['notes'] ?? '') ?></textarea>
-
-                        <div class="eval-actions">
-                            <button type="button" class="eval-btn eval-btn-approve"
-                                onclick="submitEval('approved')">
-                                <i class="fas fa-circle-check"></i> Approve
-                            </button>
-                            <button type="button" class="eval-btn eval-btn-comply"
-                                onclick="submitEval('for_compliance')">
-                                <i class="fas fa-triangle-exclamation"></i> For Compliance
-                            </button>
-                            <button type="button" class="eval-btn eval-btn-disapprove"
-                                onclick="submitEval('disapproved')">
-                                <i class="fas fa-circle-xmark"></i> Disapprove
-                            </button>
-                        </div>
-                    </form>
-                </div>
-            </div>
-        <?php endif; ?>
-
-        <!-- ── STATUS HISTORY ── -->
-        <?php if (!empty($status_history)): ?>
-            <div class="sec-card fade-in d6">
-                <div class="sec-card-head">
-                    <div class="sec-card-head-icon" style="background:#ecfdf5;color:var(--green);">
-                        <i class="fas fa-arrows-rotate"></i>
-                    </div>
-                    <span class="sec-card-title">Status History</span>
-                </div>
-                <div class="sec-card-body">
-                    <?php foreach ($status_history as $sh): ?>
-                        <div class="tl-item">
-                            <div class="tl-dot-wrap">
-                                <div class="tl-dot"></div>
-                                <div class="tl-line"></div>
-                            </div>
-                            <div class="tl-body">
-                                <div class="tl-title">
-                                    <?= htmlspecialchars(ucwords(str_replace('_', ' ', $sh['from_status'] ?? '—'))) ?>
-                                    &nbsp;<i class="fas fa-arrow-right" style="font-size:9px;color:var(--text3)"></i>&nbsp;
-                                    <?= htmlspecialchars(ucwords(str_replace('_', ' ', $sh['to_status'] ?? '—'))) ?>
-                                </div>
-                                <div class="tl-sub">
-                                    <?= htmlspecialchars($sh['changed_by']) ?>
-                                    <?= !empty($sh['reason']) ? ' — ' . htmlspecialchars($sh['reason']) : '' ?>
-                                </div>
-                                <div class="tl-date"><?= date('M d, Y • g:i a', strtotime($sh['changed_at'])) ?></div>
-                            </div>
-                        </div>
-                    <?php endforeach; ?>
-                </div>
-            </div>
-        <?php endif; ?>
-
-        <!-- ── EVALUATION HISTORY ── -->
-        <?php if (!empty($evaluations)): ?>
-            <div class="sec-card fade-in d7">
-                <div class="sec-card-head">
-                    <div class="sec-card-head-icon" style="background:#eef2ff;color:var(--indigo);">
-                        <i class="fas fa-clock-rotate-left"></i>
-                    </div>
-                    <span class="sec-card-title">Evaluation History</span>
-                </div>
-                <div class="sec-card-body">
-                    <?php foreach ($evaluations as $ev): ?>
-                        <?php
-                        $evPill = match (strtolower($ev['decision'])) {
-                            'approved'        => 'sp-approved',
-                            'for_compliance'  => 'sp-compliance',
-                            'disapproved'     => 'sp-disapproved',
-                            default           => 'sp-default',
-                        };
-                        ?>
-                        <div class="tl-item">
-                            <div class="tl-dot-wrap">
-                                <div class="tl-dot" style="background:var(--indigo)"></div>
-                                <div class="tl-line"></div>
-                            </div>
-                            <div class="tl-body">
-                                <div class="tl-title" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
-                                    <?= htmlspecialchars($ev['full_name']) ?>
-                                    <span class="status-pill <?= $evPill ?>"><?= ucfirst(htmlspecialchars($ev['decision'])) ?></span>
-                                </div>
-                                <?php if (!empty($ev['comments'])): ?>
-                                    <div class="tl-sub"><?= nl2br(htmlspecialchars($ev['comments'])) ?></div>
+                                    <?php endforeach; ?>
+                                    <p style="margin:10px 0 0;font-size:10.5px;color:var(--text3);line-height:1.5;">Not meeting a listed requirement does not auto-disqualify the applicant — this is informational to support your decision.</p>
                                 <?php endif; ?>
-                                <div class="tl-date"><?= date('M d, Y • g:i a', strtotime($ev['evaluated_at'])) ?></div>
                             </div>
+
+                            <?php if ($fitHasPreferences && $fitMatchDetails): ?>
+                                <?php
+                                $score = $fitMatchDetails['score'];
+                                if ($score >= 70) {
+                                    $tierColor = '#059669';
+                                    $tierLabel = 'Strong Match';
+                                } elseif ($score >= 40) {
+                                    $tierColor = '#a16207';
+                                    $tierLabel = 'Fair Match';
+                                } else {
+                                    $tierColor = '#6b7280';
+                                    $tierLabel = 'Low Match';
+                                }
+                                ?>
+                                <div style="border-top:1px solid var(--border);padding-top:14px;">
+                                    <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;flex-wrap:wrap;">
+                                        <span style="font-size:11.5px;font-weight:800;color:var(--text1);text-transform:uppercase;letter-spacing:.04em;">Preference Fit</span>
+                                        <span style="font-size:11px;font-weight:800;color:<?= $tierColor ?>;"><?= $tierLabel ?> · <?= $score ?>%</span>
+                                    </div>
+                                    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:0 20px;">
+                                        <?php foreach ($fitMatchDetails['components'] as $c): ?>
+                                            <?php
+                                            if (!$c['applicable']) {
+                                                $icon = '−';
+                                                $iconColor = '#9ca3af';
+                                                $level = 'Not scored';
+                                            } else {
+                                                $ratio = $c['max'] > 0 ? $c['earned'] / $c['max'] : 0;
+                                                if ($ratio >= 0.99) {
+                                                    $icon = '✓';
+                                                    $iconColor = '#059669';
+                                                    $level = 'Strong match';
+                                                } elseif ($ratio > 0) {
+                                                    $icon = '~';
+                                                    $iconColor = '#a16207';
+                                                    $level = 'Partial match';
+                                                } else {
+                                                    $icon = '✕';
+                                                    $iconColor = '#dc2626';
+                                                    $level = 'No match';
+                                                }
+                                            }
+                                            ?>
+                                            <div style="padding:6px 0;border-bottom:1px solid var(--border);">
+                                                <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
+                                                    <div style="display:flex;align-items:center;gap:8px;">
+                                                        <span style="color:<?= $iconColor ?>;font-weight:800;width:16px;text-align:center;"><?= $icon ?></span>
+                                                        <span style="font-weight:700;font-size:12px;color:var(--text1);"><?= htmlspecialchars($c['label']) ?></span>
+                                                    </div>
+                                                    <span style="font-size:10.5px;font-weight:700;color:var(--text3);white-space:nowrap;"><?= $level ?></span>
+                                                </div>
+                                                <div style="font-size:11.5px;color:var(--text3);line-height:1.5;padding:3px 0 2px 24px;"><?= htmlspecialchars($c['detail']) ?></div>
+                                            </div>
+                                        <?php endforeach; ?>
+                                    </div>
+                                    <p style="margin:8px 0 0;font-size:10.5px;color:var(--text3);line-height:1.5;">Reflects fit to the applicant's saved preferences — separate from eligibility above.</p>
+                                </div>
+                            <?php else: ?>
+                                <div style="<?= $fitHasQuals ? 'border-top:1px solid var(--border);padding-top:14px;' : '' ?>">
+                                    <span style="font-size:11.5px;font-weight:800;color:var(--text1);text-transform:uppercase;letter-spacing:.04em;">Preference Fit</span>
+                                    <p style="font-size:12px;color:var(--text3);margin:8px 0 0;">Applicant hasn't set job preferences yet, so no preference match score is available for this job order.</p>
+                                </div>
+                            <?php endif; ?>
+
                         </div>
-                    <?php endforeach; ?>
-                </div>
-            </div>
-        <?php endif; ?>
+                    </div>
+                <?php endif; ?>
+
+                <!-- ── QUESTION ANSWERS ── -->
+                <?php if (!empty($answers)): ?>
+                    <div class="sec-card fade-in d4">
+                        <div class="sec-card-head">
+                            <div class="sec-card-head-icon" style="background:#eef2ff;color:var(--indigo);">
+                                <i class="fas fa-list-ul"></i>
+                            </div>
+                            <span class="sec-card-title">Question Answers</span>
+                        </div>
+                        <div class="sec-card-body">
+                            <?php foreach ($answers as $a): ?>
+                                <div class="qa-item">
+                                    <div class="qa-question"><?= htmlspecialchars($a['question_text']) ?></div>
+                                    <div class="qa-answer"><?= nl2br(htmlspecialchars($a['answer'] ?? '—')) ?></div>
+                                </div>
+                            <?php endforeach; ?>
+                        </div>
+                    </div>
+                <?php endif; ?>
+
+                <!-- ── DOCUMENTS ── -->
+                <?php if (!empty($documents)): ?>
+                    <div class="sec-card fade-in d4">
+                        <div class="sec-card-head">
+                            <div class="sec-card-head-icon" style="background:#eff6ff;color:var(--blue);">
+                                <i class="fas fa-folder-open"></i>
+                            </div>
+                            <span class="sec-card-title">Uploaded Documents</span>
+                            <span style="margin-left:auto;font-size:10px;font-weight:700;color:var(--text3);"><?= count($documents) ?> file<?= count($documents) !== 1 ? 's' : '' ?></span>
+                        </div>
+                        <div class="sec-card-body">
+                            <?php foreach ($documents as $d): ?>
+                                <div class="doc-row">
+                                    <div class="doc-row-left">
+                                        <div class="doc-icon"><i class="fas fa-file-lines"></i></div>
+                                        <div>
+                                            <div class="doc-name"><?= htmlspecialchars($d['file_name']) ?></div>
+                                            <div class="doc-type"><?= htmlspecialchars($d['document_type']) ?></div>
+                                        </div>
+                                    </div>
+                                    <?php if (!empty($d['file_path'])):
+                                        $docExt = strtolower(pathinfo($d['file_path'], PATHINFO_EXTENSION));
+                                    ?>
+                                        <button type="button" class="doc-view-btn"
+                                            onclick="openDocPreview('../<?= htmlspecialchars($d['file_path']) ?>', '<?= htmlspecialchars(addslashes($d['file_name'])) ?>', '<?= htmlspecialchars($docExt) ?>')">
+                                            <i class="fas fa-eye"></i> Preview
+                                        </button>
+                                    <?php endif; ?>
+                                </div>
+                                <?php $docComments = $docCommentsByDocumentId[(int)$d['id']] ?? []; ?>
+                                <?php if (!empty($docComments)): ?>
+                                    <div style="margin:6px 0 8px 46px;padding:8px 10px;border:1px solid var(--border);border-radius:10px;background:var(--surface);">
+                                        <div style="font-size:10px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--text3);margin-bottom:6px;">Document comments</div>
+                                        <?php foreach ($docComments as $c): ?>
+                                            <div style="padding:6px 0;border-top:1px dashed var(--border);">
+                                                <div style="font-size:11px;color:var(--text3);font-weight:600;">
+                                                    <?= htmlspecialchars($c['commenter_name'] ?? $c['commented_by']) ?>
+                                                    · <?= date('M d, Y • g:i a', strtotime($c['created_at'])) ?>
+                                                </div>
+                                                <div style="font-size:12px;color:var(--text2);line-height:1.5;"><?= nl2br(htmlspecialchars($c['comment'])) ?></div>
+                                            </div>
+                                        <?php endforeach; ?>
+                                    </div>
+                                <?php endif; ?>
+                                <?php if ($isActionable): ?>
+                                    <form method="POST" style="margin:0 0 12px 46px;display:flex;gap:8px;flex-wrap:wrap;align-items:flex-start;">
+                                        <input type="hidden" name="action" value="add_doc_comment">
+                                        <input type="hidden" name="document_id" value="<?= (int)$d['id'] ?>">
+                                        <textarea name="doc_comment" required
+                                            placeholder="Add document-specific comment for applicant..."
+                                            style="flex:1;min-width:220px;min-height:42px;border:1px solid var(--border);border-radius:9px;padding:8px 10px;font-size:12px;font-family:'DM Sans',sans-serif;resize:vertical;"></textarea>
+                                        <button type="submit" class="doc-view-btn" style="border:none;cursor:pointer;">
+                                            <i class="fas fa-comment-dots"></i> Add Comment
+                                        </button>
+                                    </form>
+                                <?php endif; ?>
+                            <?php endforeach; ?>
+                        </div>
+                    </div>
+                <?php endif; ?>
+
+            </div><!-- /col-left -->
+
+            <!-- ══════════════════ RIGHT: action + history rail ══════════════════ -->
+            <div class="col-right">
+
+                <!-- ── EVALUATION FORM ── -->
+                <?php if ($isActionable): ?>
+                    <div class="eval-panel fade-in d5">
+                        <div class="eval-panel-head">
+                            <div class="eval-panel-head-icon"><i class="fas fa-gavel"></i></div>
+                            <span class="eval-panel-title">Submit Evaluation</span>
+                        </div>
+                        <div class="eval-panel-body">
+                            <form method="POST" id="evalForm">
+                                <input type="hidden" name="action" value="evaluate">
+                                <input type="hidden" name="decision" id="decisionInput" value="">
+
+                                <label style="display:block;font-size:10.5px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--text2);margin-bottom:7px;">
+                                    Comments <span style="font-weight:500;color:var(--text3)"></span>
+                                </label>
+                                <textarea name="comments" class="eval-textarea" required
+                                    placeholder="Add notes for the applicant or admin..."><?= htmlspecialchars($app['notes'] ?? '') ?></textarea>
+
+                                <div class="eval-actions">
+                                    <button type="button" class="eval-btn eval-btn-approve"
+                                        onclick="submitEval('approved')">
+                                        <i class="fas fa-circle-check"></i> Approve
+                                    </button>
+                                    <button type="button" class="eval-btn eval-btn-comply"
+                                        onclick="submitEval('for_compliance')">
+                                        <i class="fas fa-triangle-exclamation"></i> For Compliance
+                                    </button>
+                                    <button type="button" class="eval-btn eval-btn-disapprove"
+                                        onclick="submitEval('disapproved')">
+                                        <i class="fas fa-circle-xmark"></i> Disapprove
+                                    </button>
+                                </div>
+                            </form>
+                        </div>
+                    </div>
+                <?php endif; ?>
+
+                <!-- ── STATUS HISTORY ── -->
+                <?php if (!empty($status_history)): ?>
+                    <div class="sec-card fade-in d6">
+                        <div class="sec-card-head">
+                            <div class="sec-card-head-icon" style="background:#ecfdf5;color:var(--green);">
+                                <i class="fas fa-arrows-rotate"></i>
+                            </div>
+                            <span class="sec-card-title">Status History</span>
+                        </div>
+                        <div class="sec-card-body" style="max-height:340px;overflow-y:auto;">
+                            <?php foreach ($status_history as $sh): ?>
+                                <div class="tl-item">
+                                    <div class="tl-dot-wrap">
+                                        <div class="tl-dot"></div>
+                                        <div class="tl-line"></div>
+                                    </div>
+                                    <div class="tl-body">
+                                        <div class="tl-title">
+                                            <?= htmlspecialchars(ucwords(str_replace('_', ' ', $sh['from_status'] ?? '—'))) ?>
+                                            &nbsp;<i class="fas fa-arrow-right" style="font-size:9px;color:var(--text3)"></i>&nbsp;
+                                            <?= htmlspecialchars(ucwords(str_replace('_', ' ', $sh['to_status'] ?? '—'))) ?>
+                                        </div>
+                                        <div class="tl-sub">
+                                            <?= htmlspecialchars($sh['changed_by']) ?>
+                                            <?= !empty($sh['reason']) ? ' — ' . htmlspecialchars($sh['reason']) : '' ?>
+                                        </div>
+                                        <div class="tl-date"><?= date('M d, Y • g:i a', strtotime($sh['changed_at'])) ?></div>
+                                    </div>
+                                </div>
+                            <?php endforeach; ?>
+                        </div>
+                    </div>
+                <?php endif; ?>
+
+                <!-- ── EVALUATION HISTORY ── -->
+                <?php if (!empty($evaluations)): ?>
+                    <div class="sec-card fade-in d7">
+                        <div class="sec-card-head">
+                            <div class="sec-card-head-icon" style="background:#eef2ff;color:var(--indigo);">
+                                <i class="fas fa-clock-rotate-left"></i>
+                            </div>
+                            <span class="sec-card-title">Evaluation History</span>
+                        </div>
+                        <div class="sec-card-body" style="max-height:340px;overflow-y:auto;">
+                            <?php foreach ($evaluations as $ev): ?>
+                                <?php
+                                $evPill = match (strtolower($ev['decision'])) {
+                                    'approved'        => 'sp-approved',
+                                    'for_compliance'  => 'sp-compliance',
+                                    'disapproved'     => 'sp-disapproved',
+                                    default           => 'sp-default',
+                                };
+                                ?>
+                                <div class="tl-item">
+                                    <div class="tl-dot-wrap">
+                                        <div class="tl-dot" style="background:var(--indigo)"></div>
+                                        <div class="tl-line"></div>
+                                    </div>
+                                    <div class="tl-body">
+                                        <div class="tl-title" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+                                            <?= htmlspecialchars($ev['full_name']) ?>
+                                            <span class="status-pill <?= $evPill ?>"><?= ucfirst(htmlspecialchars($ev['decision'])) ?></span>
+                                        </div>
+                                        <?php if (!empty($ev['comments'])): ?>
+                                            <div class="tl-sub"><?= nl2br(htmlspecialchars($ev['comments'])) ?></div>
+                                        <?php endif; ?>
+                                        <div class="tl-date"><?= date('M d, Y • g:i a', strtotime($ev['evaluated_at'])) ?></div>
+                                    </div>
+                                </div>
+                            <?php endforeach; ?>
+                        </div>
+                    </div>
+                <?php endif; ?>
+
+            </div><!-- /col-right -->
+        </div><!-- /content-grid -->
 
         <!-- Timestamps -->
         <div class="timestamps fade-in d8">
@@ -874,13 +1289,32 @@ $appAvi = strtoupper(count($anp) >= 2
     </script>
 
     <script>
-        document.getElementById('live-date').textContent =
-            new Date().toLocaleDateString('en-PH', {
+        /* ── Live date + time ────────────────────────────────────────────── */
+        function updateLiveDateTime() {
+            const el = document.getElementById('live-date');
+            if (!el) return;
+
+            const now = new Date();
+
+            const datePart = now.toLocaleDateString('en-PH', {
                 weekday: 'short',
                 year: 'numeric',
                 month: 'short',
                 day: 'numeric'
             }).toUpperCase();
+
+            const timePart = now.toLocaleTimeString('en-PH', {
+                hour: 'numeric',
+                minute: '2-digit',
+                second: '2-digit',
+                hour12: true
+            }).toLowerCase();
+
+            el.textContent = `${datePart} | ${timePart}`;
+        }
+
+        updateLiveDateTime();
+        setInterval(updateLiveDateTime, 1000); // refresh every second
 
         function submitEval(decision) {
             const labels = {

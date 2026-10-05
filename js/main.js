@@ -15,16 +15,14 @@ window.logout = logout;
         .notif-modal-overlay {
             position: fixed;
             inset: 0;
-            background: rgba(2, 6, 23, .45);
+            background: transparent;
             display: none;
-            align-items: center;
-            justify-content: center;
             z-index: 9999;
-            padding: 16px;
         }
         .notif-modal {
-            width: min(560px, 100%);
-            max-height: 78vh;
+            position: fixed;
+            width: min(380px, calc(100vw - 24px));
+            max-height: 70vh;
             display: flex;
             flex-direction: column;
             background: #fff;
@@ -32,6 +30,32 @@ window.logout = logout;
             border-radius: 14px;
             box-shadow: 0 16px 40px rgba(2, 6, 23, .22);
             overflow: hidden;
+            transform-origin: top right;
+        }
+        .notif-modal::before {
+            content: '';
+            position: absolute;
+            top: -7px;
+            right: 22px;
+            width: 14px;
+            height: 14px;
+            background: #fff;
+            border-left: 1px solid #e2e8f0;
+            border-top: 1px solid #e2e8f0;
+            transform: rotate(45deg);
+        }
+        .notif-modal-overlay.notif-show .notif-modal {
+            animation: notifModalPop .22s cubic-bezier(.34, 1.56, .64, 1);
+        }
+        @keyframes notifModalPop {
+            0% {
+                opacity: 0;
+                transform: translateY(-8px) scale(0.92);
+            }
+            100% {
+                opacity: 1;
+                transform: translateY(0) scale(1);
+            }
         }
         .notif-modal-head {
             display: flex;
@@ -41,6 +65,8 @@ window.logout = logout;
             padding: 12px 14px;
             border-bottom: 1px solid #e2e8f0;
             background: #f8fafc;
+            position: relative;
+            z-index: 1;
         }
         .notif-modal-head h3 {
             margin: 0;
@@ -66,6 +92,8 @@ window.logout = logout;
             overflow: auto;
             padding: 8px;
             background: #fff;
+            position: relative;
+            z-index: 1;
         }
         .notif-item {
             border: 1px solid #e2e8f0;
@@ -151,6 +179,23 @@ window.logout = logout;
     const closeBtn = overlay.querySelector('#notifCloseBtn');
     const markAllBtn = overlay.querySelector('#notifMarkAllBtn');
 
+    /* Position the dropdown just under the bell, right-aligned to it */
+    function positionModal() {
+        const rect = bellButton.getBoundingClientRect();
+        const modal = overlay.querySelector('.notif-modal');
+        const gap = 12; // space between bell and modal, room for the arrow
+        const top = rect.bottom + gap;
+        let right = window.innerWidth - rect.right - 8; // nudge left of the bell's right edge
+        if (right < 8) right = 8;
+        modal.style.top = `${top}px`;
+        modal.style.right = `${right}px`;
+        modal.style.left = 'auto';
+    }
+
+    window.addEventListener('resize', () => {
+        if (overlay.style.display === 'block') positionModal();
+    });
+
     function formatDate(dt) {
         const d = new Date(dt);
         if (Number.isNaN(d.getTime())) return '';
@@ -161,6 +206,25 @@ window.logout = logout;
             hour: '2-digit',
             minute: '2-digit',
         });
+    }
+    function timeAgo(dt) {
+        const date = new Date(dt);
+        if (Number.isNaN(date.getTime())) return '';
+
+        const diffSec = Math.floor((Date.now() - date.getTime()) / 1000);
+
+        if (diffSec < 60) return 'Just now';
+
+        const diffMin = Math.floor(diffSec / 60);
+        if (diffMin < 60) return `${diffMin} minute${diffMin > 1 ? 's' : ''} ago`;
+
+        const diffHour = Math.floor(diffMin / 60);
+        if (diffHour < 24) return `${diffHour} hour${diffHour > 1 ? 's' : ''} ago`;
+
+        const diffDay = Math.floor(diffHour / 24);
+        if (diffDay < 7) return `${diffDay} day${diffDay > 1 ? 's' : ''} ago`;
+
+        return formatDate(dt); // 7+ days old — show full date instead
     }
 
     function setDot(count) {
@@ -176,14 +240,28 @@ window.logout = logout;
         }
         notifList.innerHTML = items.map((n) => {
             const unreadClass = Number(n.is_read) === 0 ? 'unread' : '';
-            const appInfo = n.application_id ? `Application #${n.application_id}` : (n.type || 'General');
+
+            // Client notifications carry position_title/worksite_country.
+            // Evaluator notifications carry first_name/last_name.
+            let appInfo;
+            if (n.position_title) {
+                appInfo = n.worksite_country
+                    ? `Application for ${n.position_title} in ${n.worksite_country}`
+                    : `Application for ${n.position_title}`;
+            } else if (n.first_name || n.last_name) {
+                const fullName = [n.first_name, n.last_name].filter(Boolean).join(' ');
+                appInfo = `Applicant: ${fullName}`;
+            } else {
+                appInfo = 'General';
+            }
+
             return `
                 <div class="notif-item ${unreadClass}" data-id="${n.id}">
                     <div class="notif-title">${escapeHtml(n.title || 'Notification')}</div>
                     <div class="notif-message">${escapeHtml(n.message || '')}</div>
                     <div class="notif-meta">
                         <span>${escapeHtml(appInfo)}</span>
-                        <span>${escapeHtml(formatDate(n.created_at))}</span>
+                        <span title="${escapeHtml(formatDate(n.created_at))}">${escapeHtml(timeAgo(n.created_at))}</span>
                     </div>
                 </div>
             `;
@@ -232,11 +310,17 @@ window.logout = logout;
     }
 
     function showModal() {
-        overlay.style.display = 'flex';
+        overlay.style.display = 'block';
+        positionModal();
+        // restart animation each time it opens
+        overlay.classList.remove('notif-show');
+        void overlay.offsetWidth; // force reflow so the animation replays
+        overlay.classList.add('notif-show');
     }
 
     function hideModal() {
         overlay.style.display = 'none';
+        overlay.classList.remove('notif-show');
     }
 
     function showLoginPopup(message) {

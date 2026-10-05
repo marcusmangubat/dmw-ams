@@ -206,7 +206,8 @@ $qCountry  = trim($_GET['country'] ?? '');
             justify-content: space-between;
         }
 
-        .empty-state, .loading-state {
+        .empty-state,
+        .loading-state {
             text-align: center;
             padding: 40px 0;
             color: #94a3b8;
@@ -273,22 +274,60 @@ $qCountry  = trim($_GET['country'] ?? '');
         const API = 'dashboard-api.php';
 
         const STATUS_META = {
-            pending: { label: 'Pending', color: '#f59e0b' },
-            unassign: { label: 'Unassigned', color: '#ef4444' },
-            unassigned: { label: 'Unassigned', color: '#ef4444' },
-            assign: { label: 'Assigned', color: '#3b82f6' },
-            assigned: { label: 'Assigned', color: '#3b82f6' },
-            under_evaluation: { label: 'Under Evaluation', color: '#6366f1' },
-            for_compliance: { label: 'For Compliance', color: '#f97316' },
-            resubmitted: { label: 'Resubmitted', color: '#8b5cf6' },
-            approved: { label: 'Approved', color: '#10b981' },
-            disapproved: { label: 'Disapproved', color: '#dc2626' },
+            pending: {
+                label: 'Pending',
+                color: '#f59e0b'
+            },
+            unassign: {
+                label: 'Unassigned',
+                color: '#ef4444'
+            },
+            unassigned: {
+                label: 'Unassigned',
+                color: '#ef4444'
+            },
+            assign: {
+                label: 'Assigned',
+                color: '#3b82f6'
+            },
+            assigned: {
+                label: 'Assigned',
+                color: '#3b82f6'
+            },
+            under_evaluation: {
+                label: 'Under Evaluation',
+                color: '#6366f1'
+            },
+            for_compliance: {
+                label: 'For Compliance',
+                color: '#f97316'
+            },
+            resubmitted: {
+                label: 'Resubmitted',
+                color: '#8b5cf6'
+            },
+            approved: {
+                label: 'Approved',
+                color: '#10b981'
+            },
+            disapproved: {
+                label: 'Disapproved',
+                color: '#dc2626'
+            },
         };
 
-        const FILTER_LABELS = { month: 'Month', province: 'Province', job_type: 'Job Type', country: 'Destination' };
+        const FILTER_LABELS = {
+            month: 'Month',
+            province: 'Province',
+            job_type: 'Job Type',
+            country: 'Destination'
+        };
 
         function api(action, params = {}) {
-            const qs = new URLSearchParams({ action, ...params }).toString();
+            const qs = new URLSearchParams({
+                action,
+                ...params
+            }).toString();
             return fetch(`${API}?${qs}`).then(r => {
                 if (!r.ok) throw new Error(`HTTP ${r.status}`);
                 return r.json();
@@ -309,13 +348,21 @@ $qCountry  = trim($_GET['country'] ?? '');
             if (!s) return '';
             const d = new Date(s.replace(' ', 'T'));
             if (isNaN(d)) return s;
-            return d.toLocaleDateString('en-PH', { year: 'numeric', month: 'short', day: 'numeric' });
+            return d.toLocaleDateString('en-PH', {
+                year: 'numeric',
+                month: 'short',
+                day: 'numeric'
+            });
         }
 
         function escapeHtml(str) {
             return String(str ?? '').replace(/[&<>"']/g, m => ({
-                '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
-            }[m]));
+                '&': '&amp;',
+                '<': '&lt;',
+                '>': '&gt;',
+                '"': '&quot;',
+                "'": '&#39;'
+            } [m]));
         }
 
         async function loadReport() {
@@ -333,9 +380,9 @@ $qCountry  = trim($_GET['country'] ?? '');
             // Filter summary chips
             const applied = Object.entries(data.filters || filters).filter(([, v]) => v);
             const meta = document.getElementById('rpt-meta');
-            meta.innerHTML = applied.length
-                ? applied.map(([k, v]) => `<span class="rpt-chip">${FILTER_LABELS[k] || k}: ${escapeHtml(v)}</span>`).join('')
-                : '<span class="rpt-chip">All applications (no filters applied)</span>';
+            meta.innerHTML = applied.length ?
+                applied.map(([k, v]) => `<span class="rpt-chip">${FILTER_LABELS[k] || k}: ${escapeHtml(v)}</span>`).join('') :
+                '<span class="rpt-chip">All applications (no filters applied)</span>';
 
             // Table
             const body = document.getElementById('rpt-body');
@@ -343,10 +390,12 @@ $qCountry  = trim($_GET['country'] ?? '');
                 body.innerHTML = '<div class="empty-state"><i class="fas fa-inbox"></i><br>No applications match these filters.</div>';
             } else {
                 const rowsHtml = data.rows.map(r => {
-                    const meta = STATUS_META[r.status] || { label: r.status, color: '#64748b' };
+                    const meta = STATUS_META[r.status] || {
+                        label: r.status,
+                        color: '#64748b'
+                    };
                     return `
                 <tr>
-                    <td>${r.id}</td>
                     <td>${escapeHtml(r.applicant)}</td>
                     <td>${escapeHtml(r.province)}${r.city ? ', ' + escapeHtml(r.city) : ''}</td>
                     <td>${escapeHtml(r.position_title)}</td>
@@ -361,7 +410,6 @@ $qCountry  = trim($_GET['country'] ?? '');
             <table class="rpt-table">
                 <thead>
                     <tr>
-                        <th>ID</th>
                         <th>Applicant</th>
                         <th>Province / City</th>
                         <th>Position</th>
@@ -390,9 +438,19 @@ $qCountry  = trim($_GET['country'] ?? '');
                 .set({
                     margin: 10,
                     filename: `application-report-${new Date().toISOString().slice(0, 10)}.pdf`,
-                    image: { type: 'jpeg', quality: 0.98 },
-                    html2canvas: { scale: 2, useCORS: true },
-                    jsPDF: { unit: 'mm', format: 'a4', orientation: 'landscape' },
+                    image: {
+                        type: 'jpeg',
+                        quality: 0.98
+                    },
+                    html2canvas: {
+                        scale: 2,
+                        useCORS: true
+                    },
+                    jsPDF: {
+                        unit: 'mm',
+                        format: 'a4',
+                        orientation: 'landscape'
+                    },
                 })
                 .from(el)
                 .save()

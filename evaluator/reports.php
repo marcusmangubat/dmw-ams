@@ -1,257 +1,364 @@
 <?php
-// evaluator/reports.php – DMW Evaluator Reports
-session_start();
-require_once '../db.php';
-require_once '../auth.php';
-date_default_timezone_set('Asia/Manila');
 
-// Require evaluator login
+/**
+ * evaluator-reports.php  –  DMW RO IV-A Evaluator Self-Service Reports
+ * Printable + Excel-exportable report suite, scoped to the logged-in
+ * evaluator only. Mirrors the structure/style of the admin's try.php.
+ *
+ * Reports:
+ *   1. My Workload Summary       — everything ever assigned to me (assignments table)
+ *   2. My Decision History       — every evaluation I've ever recorded
+ *   3. My Approval Rate & Turnaround — approve/disapprove ratio + avg. days to decide
+ */
+session_start();
+require_once '../db.php'; // gives us $database (mysqli)
+
 if (!isset($_SESSION['user_email']) || ($_SESSION['user_type'] ?? '') !== 'evaluator') {
     header('Location: ../login.php');
     exit;
 }
 
-$evaluator_email = $_SESSION['user_email'];
+date_default_timezone_set('Asia/Manila');
 
-// ────────────────────────────────────────────────
-// Get evaluator info
-// ────────────────────────────────────────────────
-$evaluator_name = 'Evaluator';
-$evaluator_id   = null;
+// Resolve the logged-in evaluator's eid + name — everything below is scoped to this eid only
+$stmt = $database->prepare("SELECT eid, full_name FROM evaluators WHERE email = ? LIMIT 1");
+$stmt->bind_param('s', $_SESSION['user_email']);
+$stmt->execute();
+$evaluatorRow = $stmt->get_result()->fetch_assoc();
+$stmt->close();
 
-$stmt_ev = $database->prepare("
-    SELECT eid, full_name 
-    FROM evaluators 
-    WHERE email = ? 
-    LIMIT 1
-");
-$stmt_ev->bind_param("s", $evaluator_email);
-$stmt_ev->execute();
-$ev_result = $stmt_ev->get_result();
-
-if ($ev_result->num_rows === 1) {
-    $row = $ev_result->fetch_assoc();
-    $evaluator_id   = (int)$row['eid'];
-    $evaluator_name = $row['full_name'] ?? 'Evaluator';
+if (!$evaluatorRow) {
+    http_response_code(403);
+    die('Evaluator profile not found for this account.');
 }
-$stmt_ev->close();
+$evaluator_id   = (int) $evaluatorRow['eid'];
+$evaluator_name = $evaluatorRow['full_name'] ?: $_SESSION['user_email'];
 
-// ────────────────────────────────────────────────
-// 1. MY WORKLOAD — active assignments
-// ────────────────────────────────────────────────
-$workload          = [];
-$workload_total     = 0;
-$workload_under_eval = 0;
-$workload_for_compliance = 0;
-
-if ($evaluator_id) {
-    $stmt = $database->prepare("
-        SELECT 
-            a.id,
-            a.status,
-            a.submitted_at,
-            r.rsf_number,
-            r.position_title,
-            r.worksite_country AS country,
-            COALESCE(CONCAT(c.first_name, ' ', c.last_name), 'Unknown Applicant') AS applicant_name
-        FROM assignments asn
-        INNER JOIN applications   a ON asn.application_id = a.id
-        INNER JOIN rsf_job_orders r ON a.rsf_id           = r.id
-        LEFT  JOIN clients        c ON a.client_id        = c.cid
-        WHERE asn.evaluator_id = ?
-          AND asn.status       = 'active'
-        ORDER BY a.submitted_at ASC
-    ");
-    $stmt->bind_param("i", $evaluator_id);
-    $stmt->execute();
-    $workload = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
-    $stmt->close();
-
-    $workload_total = count($workload);
-    foreach ($workload as $w) {
-        if ($w['status'] === 'under_evaluation') $workload_under_eval++;
-        if ($w['status'] === 'for_compliance')   $workload_for_compliance++;
-    }
-}
-
-// ────────────────────────────────────────────────
-// 2. MY DECISION LOG — evaluations I've made
-// ────────────────────────────────────────────────
-$decisions       = [];
-$decision_counts = ['approved' => 0, 'for_compliance' => 0, 'disapproved' => 0, 'total' => 0];
-
-if ($evaluator_id) {
-    $stmt = $database->prepare("
-        SELECT 
-            e.id,
-            e.decision,
-            e.comments,
-            e.evaluated_at,
-            a.id AS application_id,
-            r.rsf_number,
-            r.position_title,
-            COALESCE(CONCAT(c.first_name, ' ', c.last_name), 'Unknown Applicant') AS applicant_name
-        FROM evaluations e
-        INNER JOIN applications   a ON e.application_id = a.id
-        INNER JOIN rsf_job_orders r ON a.rsf_id          = r.id
-        LEFT  JOIN clients        c ON a.client_id       = c.cid
-        WHERE e.evaluator_id = ?
-        ORDER BY e.evaluated_at DESC
-        LIMIT 25
-    ");
-    $stmt->bind_param("i", $evaluator_id);
-    $stmt->execute();
-    $decisions = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
-    $stmt->close();
-
-    $stmt_dc = $database->prepare("
-        SELECT decision, COUNT(*) AS cnt
-        FROM evaluations
-        WHERE evaluator_id = ?
-        GROUP BY decision
-    ");
-    $stmt_dc->bind_param("i", $evaluator_id);
-    $stmt_dc->execute();
-    $dc_res = $stmt_dc->get_result();
-    while ($row = $dc_res->fetch_assoc()) {
-        $key = $row['decision'];
-        $cnt = (int)$row['cnt'];
-        if (array_key_exists($key, $decision_counts)) {
-            $decision_counts[$key] = $cnt;
-        }
-        $decision_counts['total'] += $cnt;
-    }
-    $stmt_dc->close();
-}
-
-// ────────────────────────────────────────────────
-// 3. TURNAROUND TIME — assigned_at vs evaluated_at
-// ────────────────────────────────────────────────
-$turnaround_rows = [];
-$avg_turnaround_hours = null;
-
-if ($evaluator_id) {
-    $stmt = $database->prepare("
-        SELECT 
-            a.id AS application_id,
-            r.rsf_number,
-            COALESCE(CONCAT(c.first_name, ' ', c.last_name), 'Unknown Applicant') AS applicant_name,
-            asn.assigned_at,
-            e.evaluated_at,
-            TIMESTAMPDIFF(HOUR, asn.assigned_at, e.evaluated_at) AS hours_taken
-        FROM assignments asn
-        INNER JOIN applications   a ON asn.application_id = a.id
-        INNER JOIN rsf_job_orders r ON a.rsf_id           = r.id
-        LEFT  JOIN clients        c ON a.client_id        = c.cid
-        INNER JOIN evaluations    e ON e.application_id   = a.id 
-                                    AND e.evaluator_id     = asn.evaluator_id
-        WHERE asn.evaluator_id = ?
-        ORDER BY e.evaluated_at DESC
-        LIMIT 25
-    ");
-    $stmt->bind_param("i", $evaluator_id);
-    $stmt->execute();
-    $turnaround_rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
-    $stmt->close();
-
-    if (!empty($turnaround_rows)) {
-        $sum = 0;
-        foreach ($turnaround_rows as $t) {
-            $sum += (int)$t['hours_taken'];
-        }
-        $avg_turnaround_hours = round($sum / count($turnaround_rows), 1);
-    }
-}
-
-// ────────────────────────────────────────────────
-// 4. COMPLIANCE / RESUBMISSION TRACKER
-// ────────────────────────────────────────────────
-$compliance_rows = [];
-
-if ($evaluator_id) {
-    $stmt = $database->prepare("
-        SELECT 
-            a.id AS application_id,
-            r.rsf_number,
-            a.status AS current_status,
-            COALESCE(CONCAT(c.first_name, ' ', c.last_name), 'Unknown Applicant') AS applicant_name,
-            sh_out.changed_at AS flagged_at,
-            sh_in.changed_at  AS resubmitted_at
-        FROM assignments asn
-        INNER JOIN applications   a ON asn.application_id = a.id
-        INNER JOIN rsf_job_orders r ON a.rsf_id           = r.id
-        LEFT  JOIN clients        c ON a.client_id        = c.cid
-        INNER JOIN status_history sh_out 
-                ON sh_out.application_id = a.id 
-               AND sh_out.to_status      = 'for_compliance'
-        LEFT  JOIN status_history sh_in 
-                ON sh_in.application_id  = a.id 
-               AND sh_in.from_status     = 'for_compliance' 
-               AND sh_in.to_status       = 'resubmitted'
-        WHERE asn.evaluator_id = ?
-        GROUP BY a.id
-        ORDER BY sh_out.changed_at DESC
-    ");
-    $stmt->bind_param("i", $evaluator_id);
-    $stmt->execute();
-    $compliance_rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
-    $stmt->close();
-}
-
-// ────────────────────────────────────────────────
-// 5. DOCUMENT CHECKLIST — required vs uploaded
-// ────────────────────────────────────────────────
-$doc_checklist = [];
-
-if ($evaluator_id) {
-    $stmt = $database->prepare("
-        SELECT 
-            a.id AS application_id,
-            r.rsf_number,
-            COALESCE(CONCAT(c.first_name, ' ', c.last_name), 'Unknown Applicant') AS applicant_name,
-            COUNT(DISTINCT rd.id) AS required_count,
-            COUNT(DISTINCT ad.required_doc_id) AS uploaded_count
-        FROM assignments asn
-        INNER JOIN applications          a  ON asn.application_id = a.id
-        INNER JOIN rsf_job_orders        r  ON a.rsf_id           = r.id
-        LEFT  JOIN clients               c  ON a.client_id        = c.cid
-        LEFT  JOIN rsf_required_documents rd ON rd.rsf_id          = r.id
-        LEFT  JOIN application_documents  ad ON ad.application_id  = a.id 
-                                              AND ad.required_doc_id = rd.id
-        WHERE asn.evaluator_id = ?
-          AND asn.status       = 'active'
-        GROUP BY a.id
-        ORDER BY a.submitted_at ASC
-    ");
-    $stmt->bind_param("i", $evaluator_id);
-    $stmt->execute();
-    $doc_checklist = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
-    $stmt->close();
-}
-
-// Greeting / avatar (same as index.php)
-$hour       = (int)date('G');
-$greeting   = $hour < 12 ? 'Good morning' : ($hour < 18 ? 'Good afternoon' : 'Good evening');
-$first_name = explode(' ', trim($evaluator_name))[0] ?: $evaluator_name;
-
+// Greeting + avatar initials — same pattern used across the project's headers
+$hour     = (int) date('H');
+$greeting = $hour < 12 ? 'Good morning' : ($hour < 18 ? 'Good afternoon' : 'Good evening');
 $parts    = explode(' ', trim($evaluator_name));
-$initials = count($parts) >= 2
-    ? strtoupper(substr($parts[0], 0, 1) . substr(end($parts), 0, 1))
-    : strtoupper(substr($evaluator_name, 0, 2));
+$initials = strtoupper(
+    (substr($parts[0] ?? '', 0, 1)) . (substr($parts[count($parts) - 1] ?? '', 0, 1))
+);
 
-// Helper: status pill class (same mapping as index.php)
-function pillClass(string $status): string
+/* ═══════════════════════════════════════════════════════════════════
+   FILTER — a single optional month filter, same UX pattern as try.php
+═══════════════════════════════════════════════════════════════════ */
+$f_month = trim($_GET['month'] ?? '');
+
+function whereSql(array $where): string
 {
-    return match ($status) {
-        'approved'         => 'sp-approved',
-        'under_evaluation' => 'sp-under',
-        'for_compliance'   => 'sp-compliance',
-        'disapproved'      => 'sp-disapproved',
-        'assign', 'assigned' => 'sp-assigned',
-        'resubmitted'       => 'sp-under',
-        default             => 'sp-default',
+    return $where ? ('WHERE ' . implode(' AND ', $where)) : '';
+}
+
+function bindDynamic(mysqli_stmt $stmt, string $types, array $params): void
+{
+    if ($types === '') return;
+    $refs = [];
+    foreach ($params as $k => $v) {
+        $refs[$k] = &$params[$k];
+    }
+    array_unshift($refs, $types);
+    call_user_func_array([$stmt, 'bind_param'], $refs);
+}
+
+function q(mysqli $db, string $sql, string $types, array $params): mysqli_result
+{
+    $stmt = $db->prepare($sql);
+    if (!$stmt) {
+        throw new RuntimeException($db->error . ' — SQL: ' . $sql);
+    }
+    bindDynamic($stmt, $types, $params);
+    $stmt->execute();
+    $res = $stmt->get_result();
+    $stmt->close();
+    return $res;
+}
+
+function fullName(array $row): string
+{
+    return trim(implode(' ', array_filter([
+        $row['first_name'] ?? '',
+        $row['middle_name'] ?? '',
+        $row['last_name'] ?? '',
+        $row['suffix'] ?? '',
+    ])));
+}
+
+function decisionBadgeClass(?string $decision): string
+{
+    return match ($decision) {
+        'approved'      => 'b-approved',
+        'disapproved'   => 'b-disapproved',
+        'for_compliance' => 'b-pending',
+        default          => 'b-other',
     };
 }
+
+// Base "scoped to me" filter, reused by every query below
+$where  = ['asg.evaluator_id = ?'];
+$types  = 'i';
+$params = [$evaluator_id];
+if ($f_month !== '' && preg_match('/^\d{4}-\d{2}$/', $f_month)) {
+    $start = $f_month . '-01 00:00:00';
+    $end   = date('Y-m-t 23:59:59', strtotime($start));
+    $where[]  = 'asg.assigned_at BETWEEN ? AND ?';
+    $types   .= 'ss';
+    $params[] = $start;
+    $params[] = $end;
+}
+$whereSql = whereSql($where);
+
+// Month options for the filter — full calendar months for every year that
+// appears in this evaluator's assignment history (falls back to the current
+// year if they have no assignments yet), so all months are selectable even
+// if a given month currently has zero records.
+$yearOptions = [];
+$res = q($database, "
+    SELECT DISTINCT YEAR(asg.assigned_at) AS yr
+    FROM assignments asg
+    WHERE asg.evaluator_id = ?
+    ORDER BY yr DESC
+", 'i', [$evaluator_id]);
+while ($row = $res->fetch_assoc()) $yearOptions[] = (int) $row['yr'];
+if (!$yearOptions) $yearOptions[] = (int) date('Y');
+
+$monthOptions = [];
+foreach ($yearOptions as $yr) {
+    for ($m = 12; $m >= 1; $m--) {
+        $monthOptions[] = $yr . '-' . str_pad($m, 2, '0', STR_PAD_LEFT);
+    }
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   REPORT 1 — My Workload Summary  (source: assignments, "ever assigned")
+═══════════════════════════════════════════════════════════════════ */
+
+// 1a. Assignment status breakdown (active / completed / reassigned)
+$assignmentStatusSummary = [];
+$res = q($database, "
+    SELECT asg.status, COUNT(*) AS cnt
+    FROM assignments asg
+    $whereSql
+    GROUP BY asg.status
+", $types, $params);
+while ($row = $res->fetch_assoc()) $assignmentStatusSummary[$row['status']] = (int) $row['cnt'];
+
+$totalEverAssigned = array_sum($assignmentStatusSummary);
+$distinctApplications = 0;
+$res = q($database, "
+    SELECT COUNT(DISTINCT asg.application_id) AS cnt
+    FROM assignments asg
+    $whereSql
+", $types, $params);
+$distinctApplications = (int) ($res->fetch_assoc()['cnt'] ?? 0);
+
+// 1b. Current status of every application ever assigned to me (distinct applications)
+$currentStatusSummary = [];
+$res = q($database, "
+    SELECT a.status, COUNT(DISTINCT a.id) AS cnt
+    FROM assignments asg
+    JOIN applications a ON a.id = asg.application_id
+    $whereSql
+    GROUP BY a.status
+    ORDER BY cnt DESC
+", $types, $params);
+while ($row = $res->fetch_assoc()) $currentStatusSummary[] = $row;
+
+// 1c. Monthly assigned volume (all history, grouped by month)
+$monthlyAssigned = [];
+$res = q($database, "
+    SELECT DATE_FORMAT(asg.assigned_at, '%Y-%m') AS ym, COUNT(*) AS cnt
+    FROM assignments asg
+    $whereSql
+    GROUP BY ym
+    ORDER BY ym ASC
+", $types, $params);
+while ($row = $res->fetch_assoc()) $monthlyAssigned[] = $row;
+
+// 1d. Detail table — every assignment ever given to me
+$assignmentDetail = [];
+$res = q($database, "
+    SELECT asg.id AS assignment_id, asg.status AS assignment_status, asg.assigned_at,
+           a.id AS application_id, a.status AS application_status, a.submitted_at,
+           c.first_name, c.middle_name, c.last_name, c.suffix,
+           j.rsf_number, j.position_title, j.worksite_country
+    FROM assignments asg
+    JOIN applications a ON a.id = asg.application_id
+    JOIN clients c ON c.cid = a.client_id
+    JOIN rsf_job_orders j ON j.id = a.rsf_id
+    $whereSql
+    ORDER BY asg.assigned_at DESC
+", $types, $params);
+while ($row = $res->fetch_assoc()) $assignmentDetail[] = $row;
+
+/* ═══════════════════════════════════════════════════════════════════
+   REPORT 2 — My Decision History  (source: evaluations, every record I made)
+═══════════════════════════════════════════════════════════════════ */
+$evalWhere  = ['e.evaluator_id = ?'];
+$evalTypes  = 'i';
+$evalParams = [$evaluator_id];
+if ($f_month !== '' && preg_match('/^\d{4}-\d{2}$/', $f_month)) {
+    $start = $f_month . '-01 00:00:00';
+    $end   = date('Y-m-t 23:59:59', strtotime($start));
+    $evalWhere[]  = 'e.evaluated_at BETWEEN ? AND ?';
+    $evalTypes   .= 'ss';
+    $evalParams[] = $start;
+    $evalParams[] = $end;
+}
+$evalWhereSql = whereSql($evalWhere);
+
+$decisionHistory = [];
+$res = q($database, "
+    SELECT e.id, e.application_id, e.evaluation_type, e.decision, e.comments, e.evaluated_at,
+           c.first_name, c.middle_name, c.last_name, c.suffix,
+           j.rsf_number, j.position_title, j.worksite_country
+    FROM evaluations e
+    JOIN applications a ON a.id = e.application_id
+    JOIN clients c ON c.cid = a.client_id
+    JOIN rsf_job_orders j ON j.id = a.rsf_id
+    $evalWhereSql
+    ORDER BY e.evaluated_at DESC
+", $evalTypes, $evalParams);
+while ($row = $res->fetch_assoc()) $decisionHistory[] = $row;
+
+$decisionTypeSummary = [];
+$res = q($database, "
+    SELECT e.decision, COUNT(*) AS cnt
+    FROM evaluations e
+    $evalWhereSql
+    GROUP BY e.decision
+", $evalTypes, $evalParams);
+while ($row = $res->fetch_assoc()) $decisionTypeSummary[] = $row;
+
+/* ═══════════════════════════════════════════════════════════════════
+   REPORT 3 — My Approval Rate & Turnaround
+═══════════════════════════════════════════════════════════════════ */
+$finalWhere  = array_merge($evalWhere, ["e.decision IN ('approved','disapproved')"]);
+$finalWhereSql = whereSql($finalWhere);
+
+$res = q($database, "
+    SELECT COUNT(*) AS total,
+           SUM(e.decision = 'approved') AS approved,
+           SUM(e.decision = 'disapproved') AS disapproved,
+           AVG(DATEDIFF(e.evaluated_at, a.submitted_at)) AS avg_days,
+           MIN(DATEDIFF(e.evaluated_at, a.submitted_at)) AS min_days,
+           MAX(DATEDIFF(e.evaluated_at, a.submitted_at)) AS max_days
+    FROM evaluations e
+    JOIN applications a ON a.id = e.application_id
+    $finalWhereSql
+", $evalTypes, $evalParams);
+$turnaroundStats = $res->fetch_assoc();
+$finalTotal      = (int) ($turnaroundStats['total'] ?? 0);
+$approvedCount   = (int) ($turnaroundStats['approved'] ?? 0);
+$disapprovedCount = (int) ($turnaroundStats['disapproved'] ?? 0);
+$approvalRate    = $finalTotal ? round($approvedCount / $finalTotal * 100, 1) : null;
+$avgTurnaround   = $turnaroundStats['avg_days'] !== null ? round((float) $turnaroundStats['avg_days'], 1) : null;
+
+// Bounce-back rate — how many times I sent an application back for compliance
+$complianceWhere = array_merge($evalWhere, ["e.decision = 'for_compliance'"]);
+$complianceWhereSql = whereSql($complianceWhere);
+$res = q($database, "
+    SELECT COUNT(*) AS cnt
+    FROM evaluations e
+    $complianceWhereSql
+", $evalTypes, $evalParams);
+$complianceCount = (int) ($res->fetch_assoc()['cnt'] ?? 0);
+
+// Monthly approved vs disapproved trend
+$monthlyDecisions = [];
+$res = q($database, "
+    SELECT DATE_FORMAT(e.evaluated_at, '%Y-%m') AS ym,
+           SUM(e.decision = 'approved') AS approved,
+           SUM(e.decision = 'disapproved') AS disapproved
+    FROM evaluations e
+    $finalWhereSql
+    GROUP BY ym
+    ORDER BY ym ASC
+", $evalTypes, $evalParams);
+while ($row = $res->fetch_assoc()) $monthlyDecisions[] = $row;
+
+$my_assigned_count = 0;
+
+if ($evaluator_id) {
+    $stmt_cnt = $database->prepare("
+        SELECT COUNT(*) as cnt 
+        FROM applications 
+        WHERE current_evaluator_id = ? 
+          AND handling_party = 'evaluator'
+    ");
+    $stmt_cnt->bind_param("i", $evaluator_id);
+    $stmt_cnt->execute();
+    $my_assigned_count = (int)$stmt_cnt->get_result()->fetch_assoc()['cnt'];
+    $stmt_cnt->close();
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   REPORT 4 — My Document Compliance
+   Required vs. submitted documents, limited to applications ever
+   assigned to me (via assignments table), deduplicated per application.
+═══════════════════════════════════════════════════════════════════ */
+$docCompliance = [];
+$res = q($database, "
+    SELECT a.id, a.rsf_id, a.submitted_at,
+           c.first_name, c.middle_name, c.last_name, c.suffix,
+           j.rsf_number, j.employer_name,
+           (SELECT COUNT(*) FROM rsf_required_documents rd
+              WHERE rd.rsf_id = a.rsf_id AND rd.is_required = 1) AS required_count,
+           (SELECT COUNT(DISTINCT rd2.document_type)
+              FROM rsf_required_documents rd2
+              JOIN application_documents ad
+                ON ad.application_id = a.id AND ad.document_type = rd2.document_type
+              WHERE rd2.rsf_id = a.rsf_id AND rd2.is_required = 1) AS submitted_count
+    FROM assignments asg
+    JOIN applications a ON a.id = asg.application_id
+    JOIN clients c ON c.cid = a.client_id
+    JOIN rsf_job_orders j ON j.id = a.rsf_id
+    $whereSql
+    GROUP BY a.id
+    ORDER BY a.submitted_at DESC
+", $types, $params);
+while ($row = $res->fetch_assoc()) $docCompliance[] = $row;
+
+$missingStmt = $database->prepare("
+    SELECT rd.document_name
+    FROM rsf_required_documents rd
+    WHERE rd.rsf_id = ? AND rd.is_required = 1
+      AND rd.document_type NOT IN (
+          SELECT ad.document_type FROM application_documents ad WHERE ad.application_id = ?
+      )
+");
+foreach ($docCompliance as &$d) {
+    $required  = (int) $d['required_count'];
+    $submitted = (int) $d['submitted_count'];
+    $d['completion_pct'] = $required > 0 ? round(($submitted / $required) * 100) : 100;
+
+    $rsfId = (int) $d['rsf_id'];
+    $appId = (int) $d['id'];
+    $missingStmt->bind_param('ii', $rsfId, $appId);
+    $missingStmt->execute();
+    $missingRes = $missingStmt->get_result();
+    $names = [];
+    while ($m = $missingRes->fetch_assoc()) $names[] = $m['document_name'];
+    $d['missing_documents'] = $names ? implode(', ', $names) : '—';
+}
+unset($d);
+$missingStmt->close();
+
+$docCompleteCount   = count(array_filter($docCompliance, fn($d) => $d['completion_pct'] == 100));
+$docIncompleteCount = count($docCompliance) - $docCompleteCount;
+$docAvgCompletion   = $docCompliance ? round(array_sum(array_column($docCompliance, 'completion_pct')) / count($docCompliance)) : 0;
+
+// Dock "Apps" badge — my currently active assignments only
+$badge_stmt = $database->prepare("SELECT COUNT(*) AS total FROM assignments WHERE evaluator_id = ? AND status = 'active'");
+$badge_stmt->bind_param('i', $evaluator_id);
+$badge_stmt->execute();
+$active_apps = (int) ($badge_stmt->get_result()->fetch_assoc()['total'] ?? 0);
+$badge_stmt->close();
+
+$filterRecap = $f_month !== '' ? 'Month: ' . date('F Y', strtotime($f_month . '-01')) : 'All records (no filter applied)';
+$generatedAt = date('F j, Y g:i A');
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -259,235 +366,383 @@ function pillClass(string $status): string
 <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Reports – DMW Evaluator Portal</title>
-    <link rel="icon" type="image/png" href="https://dmw.gov.ph/images/dmw_tahanan_ng_ofw_colored.png">
-
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800&family=DM+Serif+Display&display=swap" rel="stylesheet">
-
+    <title>My Reports – DMW RO IV-A</title>
+    <script src="https://cdn.tailwindcss.com"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700;9..40,800&family=DM+Serif+Display&display=swap" rel="stylesheet">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
-
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
     <link rel="stylesheet" href="../css/dashboard.css">
-
+    <link rel="icon" type="image/png" href="https://dmw.gov.ph/images/dmw_tahanan_ng_ofw_colored.png">
     <style>
-        /* ── Page-specific additions that extend dashboard.css ── */
-
-        .tab-row {
-            display: flex;
-            gap: 8px;
-            overflow-x: auto;
-            margin-bottom: 14px;
-            padding-bottom: 2px;
-        }
-
-        .tab-btn {
-            flex-shrink: 0;
-            background: var(--card);
-            border: 1px solid var(--border);
-            border-radius: 99px;
-            padding: 8px 16px;
-            font-family: 'DM Sans', sans-serif;
-            font-size: 11.5px;
-            font-weight: 700;
-            color: var(--text2);
-            cursor: pointer;
-            transition: background .16s, color .16s, border-color .16s;
-            white-space: nowrap;
-        }
-
-        .tab-btn.active {
-            background: var(--indigo);
-            border-color: var(--indigo);
-            color: #fff;
-        }
-
-        .tab-panel {
-            display: none;
-        }
-
-        .tab-panel.active {
-            display: block;
-        }
-
-        .report-table {
-            width: 100%;
-            border-collapse: collapse;
-        }
-
-        .report-table th {
-            text-align: left;
-            font-size: 9.5px;
-            font-weight: 700;
-            letter-spacing: .06em;
-            text-transform: uppercase;
-            color: var(--text3);
-            padding: 8px 10px;
-            border-bottom: 1px solid var(--border);
-            white-space: nowrap;
-        }
-
-        .report-table td {
-            font-size: 12px;
-            color: var(--text1);
-            padding: 10px 10px;
-            border-bottom: 1px solid var(--border);
-            vertical-align: middle;
-        }
-
-        .report-table tr:last-child td {
-            border-bottom: none;
-        }
-
-        .report-table .meta-sub {
-            font-size: 10.5px;
-            color: var(--text3);
-            margin-top: 2px;
-            font-weight: 500;
-        }
-
-        .table-wrap {
-            overflow-x: auto;
-        }
-
-        .mini-stat-row {
-            display: grid;
-            grid-template-columns: repeat(3, 1fr);
-            gap: 10px;
-            margin-bottom: 14px;
-        }
-
-        .mini-stat {
-            background: var(--surface);
-            border: 1px solid var(--border);
-            border-radius: 12px;
-            padding: 12px 14px;
-        }
-
-        .mini-stat .ms-label {
-            font-size: 9.5px;
-            font-weight: 700;
-            letter-spacing: .05em;
-            text-transform: uppercase;
-            color: var(--text3);
-        }
-
-        .mini-stat .ms-value {
-            font-size: 20px;
-            font-weight: 800;
-            color: var(--text1);
-            margin-top: 4px;
-            font-family: 'DM Sans', sans-serif;
-        }
-
-        .doc-progress-wrap {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            min-width: 110px;
-        }
-
-        .doc-progress-bar {
-            flex: 1;
-            height: 6px;
-            background: #eef2ff;
-            border-radius: 99px;
-            overflow: hidden;
-        }
-
-        .doc-progress-fill {
-            height: 100%;
-            border-radius: 99px;
-        }
-
-        .doc-progress-text {
-            font-size: 10.5px;
-            font-weight: 700;
-            color: var(--text2);
-            flex-shrink: 0;
-        }
-
-        .badge-complete {
-            background: #d1fae5;
-            color: #065f46;
-        }
-
-        .badge-incomplete {
-            background: #fef3c7;
-            color: #92400e;
-        }
-
-        .pill-small {
-            display: inline-block;
-            font-size: 9px;
-            font-weight: 700;
-            letter-spacing: .03em;
-            text-transform: uppercase;
-            padding: 3px 8px;
-            border-radius: 99px;
-        }
-
-        .empty-row {
-            padding: 30px 10px;
-            text-align: center;
-            color: var(--text3);
-            font-size: 12px;
-            font-weight: 600;
-        }
-
-        .fade-in {
-            opacity: 0;
-            transform: translateY(10px);
-            animation: fi2 .4s ease forwards;
-        }
-
-        @keyframes fi2 {
-            to {
-                opacity: 1;
-                transform: translateY(0);
-            }
-        }
-
-        .d1 {
-            animation-delay: .05s
-        }
-
-        .d2 {
-            animation-delay: .1s
-        }
-
-        .d3 {
-            animation-delay: .15s
-        }
-
-        .d4 {
-            animation-delay: .2s
-        }
-
         .topbar-brand img {
             width: 42px;
             height: auto;
             display: block;
             background: transparent;
             filter: none;
+        }
 
+        :root {
+            --blue: #1d4ed8;
+            --blue-lt: #3b82f6;
+            --ok: #10b981;
+            --amber: #d97706;
+            --indigo: #6366f1;
+            --gold: #eab308;
+            --red: #dc2626;
+            --text1: #0f172a;
+            --text2: #475569;
+            --text3: #94a3b8;
+            --bdr: #e2e8f0;
+            --surface: #ffffff;
+            --surface2: #f8fafc;
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            font-family: 'DM Sans', system-ui, sans-serif;
+            background: #eef2f7;
+            color: var(--text1);
+        }
+
+        .toolbar {
+            position: sticky;
+            top: 0;
+            z-index: 50;
+            background: var(--surface);
+            border-bottom: 1px solid var(--bdr);
+            padding: 12px 20px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            flex-wrap: wrap;
+            gap: 10px;
+        }
+
+        .toolbar-title {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-weight: 700;
+            font-size: 14px;
+        }
+
+        .toolbar-title img {
+            height: 28px;
+        }
+
+        .toolbar-actions {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 8px 14px;
+            border-radius: 8px;
+            border: 1px solid var(--bdr);
+            background: var(--surface2);
+            color: var(--text1);
+            font-size: 12px;
+            font-weight: 600;
+            text-decoration: none;
+            cursor: pointer;
+            transition: filter .15s;
+        }
+
+        .btn-primary {
+            background: var(--blue);
+            border-color: var(--blue);
+            color: #fff;
+        }
+
+        .btn-green {
+            background: var(--ok);
+            border-color: var(--ok);
+            color: #fff;
+        }
+
+        .btn:hover {
+            filter: brightness(1.08);
+        }
+
+        .tabs {
+            display: flex;
+            gap: 6px;
+            padding: 10px 20px;
+            background: var(--surface);
+            border-bottom: 1px solid var(--bdr);
+            overflow-x: auto;
+        }
+
+        .tab-btn {
+            flex-shrink: 0;
+            padding: 8px 14px;
+            border-radius: 999px;
+            border: 1px solid var(--bdr);
+            background: var(--surface2);
+            color: var(--text2);
+            font-size: 12px;
+            font-weight: 600;
+            cursor: pointer;
+            white-space: nowrap;
+        }
+
+        .tab-btn.active {
+            background: var(--blue);
+            border-color: var(--blue);
+            color: #fff;
+        }
+
+        .sheet {
+            max-width: 1000px;
+            margin: 20px auto;
+            padding: 0 16px 110px;
+        }
+
+        .letterhead {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 12px;
+            background: var(--surface);
+            border: 1px solid var(--bdr);
+            border-radius: 10px;
+            padding: 16px 20px;
+            margin-bottom: 16px;
+        }
+
+        .letterhead-left {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .letterhead-left img {
+            width: 44px;
+        }
+
+        .letterhead-left h1 {
+            font-size: 15px;
+            margin: 0;
+        }
+
+        .letterhead-left p {
+            font-size: 11px;
+            color: var(--text2);
+            margin: 2px 0 0;
+        }
+
+        .letterhead-right {
+            font-size: 11px;
+            color: var(--text2);
+            text-align: right;
+            line-height: 1.6;
+        }
+
+        .report-section {
+            display: none;
+        }
+
+        .report-section.active {
+            display: block;
+        }
+
+        .report-card {
+            background: var(--surface);
+            border: 1px solid var(--bdr);
+            border-radius: 10px;
+            padding: 20px;
+            margin-bottom: 16px;
+        }
+
+        .report-card h2 {
+            font-size: 15px;
+            margin: 0 0 4px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .report-card .sub {
+            font-size: 11.5px;
+            color: var(--text2);
+            margin: 0 0 16px;
+        }
+
+        .tiles {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+            gap: 10px;
+            margin-bottom: 16px;
+        }
+
+        .tile {
+            background: var(--surface2);
+            border: 1px solid var(--bdr);
+            border-radius: 10px;
+            padding: 14px;
+            text-align: center;
+        }
+
+        .tv {
+            font-size: 22px;
+            font-weight: 800;
+            color: var(--blue);
+        }
+
+        .tl {
+            font-size: 10.5px;
+            color: var(--text2);
+            margin-top: 2px;
+            text-transform: uppercase;
+            letter-spacing: .02em;
+        }
+
+        .chart-wrap {
+            max-width: 420px;
+            margin: 0 auto 18px;
+        }
+
+        table.report-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 11.5px;
+        }
+
+        table.report-table th {
+            background: var(--surface2);
+            text-align: left;
+            padding: 8px 10px;
+            font-weight: 700;
+            font-size: 10.5px;
+            text-transform: uppercase;
+            letter-spacing: .02em;
+            color: var(--text2);
+            border-bottom: 2px solid var(--bdr);
+            white-space: nowrap;
+        }
+
+        table.report-table td {
+            padding: 7px 10px;
+            border-bottom: 1px solid var(--bdr);
+            color: var(--text1);
+        }
+
+        table.report-table tbody tr:nth-child(even) {
+            background: #fbfcfe;
+        }
+
+        .badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 999px;
+            font-size: 10px;
+            font-weight: 700;
+        }
+
+        .b-approved {
+            background: #d1fae5;
+            color: #047857;
+        }
+
+        .b-disapproved {
+            background: #fee2e2;
+            color: #b91c1c;
+        }
+
+        .b-pending {
+            background: #fef3c7;
+            color: #b45309;
+        }
+
+        .b-other {
+            background: #e0e7ff;
+            color: #3730a3;
+        }
+
+        .empty-row td {
+            text-align: center;
+            color: var(--text3);
+            padding: 24px;
+            font-style: italic;
+        }
+
+        .footer-note {
+            font-size: 10.5px;
+            color: var(--text3);
+            text-align: center;
+            margin-top: 18px;
+        }
+
+        @media print {
+            .no-print {
+                display: none !important;
+            }
+
+            body {
+                background: #fff;
+            }
+
+            .sheet {
+                max-width: 100%;
+                margin: 0;
+                padding: 0;
+            }
+
+            .letterhead,
+            .report-card {
+                border: none;
+                box-shadow: none;
+                padding: 0 0 12px;
+            }
+
+            body:not(.print-all) .report-section {
+                display: none;
+            }
+
+            body:not(.print-all) .report-section.active {
+                display: block;
+            }
+
+            body.print-all .report-section {
+                display: block !important;
+                page-break-after: always;
+            }
+
+            body.print-all .report-section:last-child {
+                page-break-after: auto;
+            }
+
+            table.report-table {
+                font-size: 10px;
+            }
         }
     </style>
 </head>
 
 <body>
 
-    <!-- ══════════════════════════════════════════
-         TOPBAR
-    ══════════════════════════════════════════ -->
-    <header class="topbar">
+    <!-- ── TOP BAR ──────────────────────────────────────────────────── -->
+    <header class="topbar no-print">
         <div class="topbar-brand">
-            <img src="https://dmw.gov.ph/images/dmw_tahanan_ng_ofw_colored.png" alt="DMW">
+            <img src="https://dmw.gov.ph/images/dmw_tahanan_ng_ofw_colored.png" alt="DMW" class="h-9">
             <div class="brand-divider"></div>
             <div class="brand-text">
                 <h1>Department of Migrant Workers</h1>
-                <p>REGIONAL OFFICE IV-A &nbsp;·&nbsp; EVALUATOR PORTAL</p>
+                <p>REGIONAL OFFICE IV-A &nbsp;-&nbsp; EVALUATOR PORTAL</p>
             </div>
         </div>
         <div class="topbar-right">
@@ -496,369 +751,671 @@ function pillClass(string $status): string
                 <i class="fas fa-bell"></i>
                 <span class="notif-dot"></span>
             </div>
-            <div class="tb-btn"><i class="fas fa-magnifying-glass"></i></div>
             <div class="topbar-avatar"><?= htmlspecialchars($initials) ?></div>
         </div>
     </header>
 
-    <!-- ══════════════════════════════════════════
-         SUBBAR
-    ══════════════════════════════════════════ -->
-    <div class="subbar">
+    <!-- ── SUBBAR ────────────────────────────────────────────────────── -->
+    <div class="subbar no-print">
         <div class="subbar-top">
             <div class="subbar-greeting">
-                <h2>Reports</h2>
-                <p><?= htmlspecialchars($first_name) ?>'s personal evaluation reports</p>
+                <h2><?= htmlspecialchars($greeting) ?>, <?= htmlspecialchars($evaluator_name) ?></h2>
+                <p>Your personal workload, decisions, and performance</p>
             </div>
+        </div>
+        <form class="filter-scroll" method="GET" action="<?= htmlspecialchars($_SERVER['PHP_SELF']) ?>" id="reportFilterForm">
+            <label class="filter-pill">
+                <i class="fas fa-calendar-alt" style="color:var(--blue-lt)"></i>
+                <select name="month" id="filter-month" class="bg-transparent border-none outline-none font-semibold text-xs text-inherit cursor-pointer">
+                    <option value="">All Time</option>
+                    <?php foreach ($monthOptions as $ym): ?>
+                        <option value="<?= htmlspecialchars($ym) ?>" <?= $ym === $f_month ? 'selected' : '' ?>>
+                            <?= htmlspecialchars(date('M Y', strtotime($ym . '-01'))) ?>
+                        </option>
+                    <?php endforeach; ?>
+                </select>
+            </label>
+            <button type="submit" class="filter-pill" style="cursor:pointer;border:none">
+                <i class="fas fa-filter" style="color:var(--blue-lt)"></i>
+                <span style="font-weight:600;font-size:11px">Apply Filter</span>
+            </button>
+            <?php if ($f_month !== ''): ?>
+                <a href="<?= htmlspecialchars($_SERVER['PHP_SELF']) ?>" class="filter-pill" style="text-decoration:none">
+                    <i class="fas fa-xmark" style="color:var(--red)"></i>
+                    <span style="font-weight:600;font-size:11px">Clear</span>
+                </a>
+            <?php endif; ?>
+        </form>
+    </div>
+
+    <!-- ── TOOLBAR ─────────────────────────────────────────────────── -->
+    <div class="toolbar no-print">
+        <div class="toolbar-title">
+            <img src="https://dmw.gov.ph/images/dmw_tahanan_ng_ofw_colored.png" alt="DMW">
+            <span>DMW RO IV-A — My Reports</span>
+        </div>
+        <div class="toolbar-actions">
+            <a href="dashboard.php" class="btn"><i class="fas fa-arrow-left"></i> Back to Dashboard</a>
+            <button class="btn" onclick="printCurrent()"><i class="fas fa-print"></i> Print This Report</button>
+            <button class="btn btn-green" onclick="exportCurrent()"><i class="fas fa-file-excel"></i> Export to Excel</button>
+            <button class="btn btn-green" onclick="exportCurrentPDF()"><i class="fas fa-file-pdf"></i> Export to PDF</button>
+            <button class="btn btn-primary" onclick="printAll()"><i class="fas fa-print"></i> Print All Reports</button>
+            <button class="btn btn-primary" onclick="exportAll()"><i class="fas fa-file-excel"></i> Export All (Excel)</button>
+            <button class="btn btn-primary" onclick="exportAllPDF()"><i class="fas fa-file-pdf"></i> Export All (PDF)</button>
         </div>
     </div>
 
-    <!-- ══════════════════════════════════════════
-         MAIN CONTENT
-    ══════════════════════════════════════════ -->
-    <div class="main">
+    <!-- ── TABS ────────────────────────────────────────────────────── -->
+    <div class="tabs no-print" id="tabs">
+        <button class="tab-btn active" data-target="rep-workload">My Workload Summary</button>
+        <button class="tab-btn" data-target="rep-decisions">My Decision History</button>
+        <button class="tab-btn" data-target="rep-rate">My Approval Rate &amp; Turnaround</button>
+        <button class="tab-btn" data-target="rep-doccompliance">My Document Compliance</button>
+    </div>
 
-        <!-- Tabs -->
-        <div class="tab-row fade-in d1">
-            <button class="tab-btn active" data-tab="workload">My Workload</button>
-            <button class="tab-btn" data-tab="decisions">Decision Log</button>
-            <button class="tab-btn" data-tab="turnaround">Turnaround Time</button>
-            <button class="tab-btn" data-tab="compliance">Compliance Tracker</button>
-            <button class="tab-btn" data-tab="documents">Document Checklist</button>
-        </div>
+    <div class="sheet">
 
-        <!-- ────────────────────────────────────
-             TAB 1: MY WORKLOAD
-        ──────────────────────────────────── -->
-        <div class="tab-panel active" id="panel-workload">
-
-            <div class="mini-stat-row fade-in d2">
-                <div class="mini-stat">
-                    <div class="ms-label">Active Assignments</div>
-                    <div class="ms-value"><?= number_format($workload_total) ?></div>
-                </div>
-                <div class="mini-stat">
-                    <div class="ms-label">Under Evaluation</div>
-                    <div class="ms-value"><?= number_format($workload_under_eval) ?></div>
-                </div>
-                <div class="mini-stat">
-                    <div class="ms-label">For Compliance</div>
-                    <div class="ms-value"><?= number_format($workload_for_compliance) ?></div>
+        <!-- Letterhead shown on every report -->
+        <div class="letterhead">
+            <div class="letterhead-left">
+                <img src="https://dmw.gov.ph/images/dmw_tahanan_ng_ofw_colored.png" alt="DMW logo">
+                <div>
+                    <h1>Department of Migrant Workers — Regional Office IV-A</h1>
+                    <p>Evaluator Self-Service Reports</p>
                 </div>
             </div>
-
-            <div class="card fade-in d3">
-                <div class="card-head">
-                    <span class="card-title">
-                        <span class="ctdot" style="background:var(--blue-lt)"></span>
-                        My Assigned Applications
-                    </span>
-                </div>
-                <div class="table-wrap">
-                    <?php if (empty($workload)): ?>
-                        <div class="empty-row">No active assignments right now.</div>
-                    <?php else: ?>
-                        <table class="report-table">
-                            <thead>
-                                <tr>
-                                    <th>Applicant</th>
-                                    <th>RSF / Position</th>
-                                    <th>Country</th>
-                                    <th>Status</th>
-                                    <th>Submitted</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                <?php foreach ($workload as $w): ?>
-                                    <tr>
-                                        <td><?= htmlspecialchars($w['applicant_name']) ?></td>
-                                        <td>
-                                            <?= htmlspecialchars($w['rsf_number'] ?? '—') ?>
-                                            <div class="meta-sub"><?= htmlspecialchars($w['position_title'] ?? '—') ?></div>
-                                        </td>
-                                        <td><?= htmlspecialchars($w['country'] ?? '—') ?></td>
-                                        <td>
-                                            <span class="status-pill pill-small <?= pillClass($w['status']) ?>">
-                                                <?= htmlspecialchars(str_replace('_', ' ', ucwords($w['status']))) ?>
-                                            </span>
-                                        </td>
-                                        <td><?= $w['submitted_at'] ? date('M d, Y', strtotime($w['submitted_at'])) : '—' ?></td>
-                                    </tr>
-                                <?php endforeach; ?>
-                            </tbody>
-                        </table>
-                    <?php endif; ?>
-                </div>
+            <div class="letterhead-right">
+                <div>Generated: <b><?= htmlspecialchars($generatedAt) ?></b></div>
+                <div>Evaluator: <b><?= htmlspecialchars($evaluator_name) ?></b></div>
+                <div>Filter: <b><?= htmlspecialchars($filterRecap) ?></b></div>
             </div>
         </div>
 
-        <!-- ────────────────────────────────────
-             TAB 2: DECISION LOG
-        ──────────────────────────────────── -->
-        <div class="tab-panel" id="panel-decisions">
+        <!-- ══════════════════════════ REPORT 1: MY WORKLOAD SUMMARY ══════════════════════════ -->
+        <section class="report-section active" id="rep-workload">
+            <div class="report-card">
+                <h2><i class="fas fa-briefcase" style="color:var(--blue)"></i> My Workload Summary</h2>
+                <p class="sub">Every application ever assigned to me, whether still active, completed, or reassigned to someone else.</p>
 
-            <div class="mini-stat-row fade-in d2">
-                <div class="mini-stat">
-                    <div class="ms-label">Total Evaluations</div>
-                    <div class="ms-value"><?= number_format($decision_counts['total']) ?></div>
-                </div>
-                <div class="mini-stat">
-                    <div class="ms-label">Approved</div>
-                    <div class="ms-value" style="color:#059669"><?= number_format($decision_counts['approved']) ?></div>
-                </div>
-                <div class="mini-stat">
-                    <div class="ms-label">For Compliance</div>
-                    <div class="ms-value" style="color:#d97706"><?= number_format($decision_counts['for_compliance']) ?></div>
-                </div>
-            </div>
-
-            <div class="card fade-in d3">
-                <div class="card-head">
-                    <span class="card-title">
-                        <span class="ctdot" style="background:var(--indigo)"></span>
-                        My Evaluation History
-                    </span>
-                </div>
-                <div class="table-wrap">
-                    <?php if (empty($decisions)): ?>
-                        <div class="empty-row">No evaluations recorded yet.</div>
-                    <?php else: ?>
-                        <table class="report-table">
-                            <thead>
-                                <tr>
-                                    <th>Applicant</th>
-                                    <th>RSF</th>
-                                    <th>Decision</th>
-                                    <th>Comments</th>
-                                    <th>Evaluated</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                <?php foreach ($decisions as $d): ?>
-                                    <tr>
-                                        <td><?= htmlspecialchars($d['applicant_name']) ?></td>
-                                        <td>
-                                            <?= htmlspecialchars($d['rsf_number'] ?? '—') ?>
-                                            <div class="meta-sub"><?= htmlspecialchars($d['position_title'] ?? '—') ?></div>
-                                        </td>
-                                        <td>
-                                            <span class="status-pill pill-small <?= pillClass($d['decision'] ?? '') ?>">
-                                                <?= htmlspecialchars(str_replace('_', ' ', ucwords($d['decision'] ?? '—'))) ?>
-                                            </span>
-                                        </td>
-                                        <td><?= htmlspecialchars($d['comments'] !== '' ? $d['comments'] : '—') ?></td>
-                                        <td><?= $d['evaluated_at'] ? date('M d, Y g:i A', strtotime($d['evaluated_at'])) : '—' ?></td>
-                                    </tr>
-                                <?php endforeach; ?>
-                            </tbody>
-                        </table>
-                    <?php endif; ?>
-                </div>
-            </div>
-        </div>
-
-        <!-- ────────────────────────────────────
-             TAB 3: TURNAROUND TIME
-        ──────────────────────────────────── -->
-        <div class="tab-panel" id="panel-turnaround">
-
-            <div class="mini-stat-row fade-in d2">
-                <div class="mini-stat">
-                    <div class="ms-label">Avg. Turnaround</div>
-                    <div class="ms-value">
-                        <?= $avg_turnaround_hours !== null ? number_format($avg_turnaround_hours, 1) . ' hrs' : '—' ?>
+                <div class="tiles">
+                    <div class="tile">
+                        <div class="tv"><?= $totalEverAssigned ?></div>
+                        <div class="tl">Total Assignments</div>
+                    </div>
+                    <div class="tile">
+                        <div class="tv"><?= $distinctApplications ?></div>
+                        <div class="tl">Distinct Applications</div>
+                    </div>
+                    <div class="tile">
+                        <div class="tv"><?= $assignmentStatusSummary['active'] ?? 0 ?></div>
+                        <div class="tl">Currently Active</div>
+                    </div>
+                    <div class="tile">
+                        <div class="tv"><?= $assignmentStatusSummary['completed'] ?? 0 ?></div>
+                        <div class="tl">Completed</div>
+                    </div>
+                    <div class="tile">
+                        <div class="tv"><?= $assignmentStatusSummary['reassigned'] ?? 0 ?></div>
+                        <div class="tl">Reassigned Away</div>
                     </div>
                 </div>
-                <div class="mini-stat">
-                    <div class="ms-label">Cases Measured</div>
-                    <div class="ms-value"><?= number_format(count($turnaround_rows)) ?></div>
+
+                <div class="chart-wrap"><canvas id="chartMonthlyAssigned"></canvas></div>
+
+                <h2 style="font-size:13px;margin-top:24px"><i class="fas fa-layer-group" style="color:var(--indigo)"></i> Current Status of My Applications</h2>
+                <table class="report-table" id="tbl-current-status" style="margin-bottom:20px">
+                    <thead>
+                        <tr>
+                            <th>Application Status</th>
+                            <th>Count</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php if (!$currentStatusSummary): ?><tr class="empty-row">
+                                <td colspan="2">No applications have been assigned to you yet.</td>
+                            </tr><?php endif; ?>
+                        <?php foreach ($currentStatusSummary as $s): ?>
+                            <tr>
+                                <td><?= htmlspecialchars(ucwords(str_replace('_', ' ', $s['status']))) ?></td>
+                                <td><?= (int) $s['cnt'] ?></td>
+                            </tr>
+                        <?php endforeach; ?>
+                    </tbody>
+                </table>
+
+                <h2 style="font-size:13px"><i class="fas fa-list-check" style="color:var(--amber)"></i> Assignment Detail</h2>
+                <table class="report-table" id="tbl-assignment-detail">
+                    <thead>
+                        <tr>
+                            <th>Applicant</th>
+                            <th>RSF #</th>
+                            <th>Position</th>
+                            <th>Country</th>
+                            <th>Assignment Status</th>
+                            <th>Application Status</th>
+                            <th>Assigned At</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php if (!$assignmentDetail): ?><tr class="empty-row">
+                                <td colspan="7">No assignments found for the selected filter.</td>
+                            </tr><?php endif; ?>
+                        <?php foreach ($assignmentDetail as $d): ?>
+                            <tr>
+                                <td><?= htmlspecialchars(fullName($d)) ?></td>
+                                <td><?= htmlspecialchars($d['rsf_number']) ?></td>
+                                <td><?= htmlspecialchars($d['position_title']) ?></td>
+                                <td><?= htmlspecialchars($d['worksite_country']) ?></td>
+                                <td><span class="badge <?= $d['assignment_status'] === 'active' ? 'b-pending' : ($d['assignment_status'] === 'completed' ? 'b-approved' : 'b-other') ?>"><?= htmlspecialchars(ucfirst($d['assignment_status'])) ?></span></td>
+                                <td><?= htmlspecialchars(ucwords(str_replace('_', ' ', $d['application_status']))) ?></td>
+                                <td><?= htmlspecialchars(date('M j, Y g:i A', strtotime($d['assigned_at']))) ?></td>
+                            </tr>
+                        <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
+        <!-- ══════════════════════════ REPORT 2: MY DECISION HISTORY ══════════════════════════ -->
+        <section class="report-section" id="rep-decisions">
+            <div class="report-card">
+                <h2><i class="fas fa-clipboard-check" style="color:var(--indigo)"></i> My Decision History</h2>
+                <p class="sub">Every evaluation record I have ever submitted — initial decisions and compliance reviews alike.</p>
+
+                <div class="tiles">
+                    <?php foreach ($decisionTypeSummary as $d): ?>
+                        <div class="tile">
+                            <div class="tv"><?= (int) $d['cnt'] ?></div>
+                            <div class="tl"><?= htmlspecialchars(ucwords(str_replace('_', ' ', $d['decision'] ?? 'Unspecified'))) ?></div>
+                        </div>
+                    <?php endforeach; ?>
                 </div>
-                <div class="mini-stat">
-                    <div class="ms-label">Fastest Case</div>
-                    <div class="ms-value">
-                        <?php
-                        $fastest = null;
-                        foreach ($turnaround_rows as $t) {
-                            if ($fastest === null || (int)$t['hours_taken'] < $fastest) {
-                                $fastest = (int)$t['hours_taken'];
+
+                <table class="report-table" id="tbl-decision-history">
+                    <thead>
+                        <tr>
+                            <th>Applicant</th>
+                            <th>Position / Country</th>
+                            <th>Type</th>
+                            <th>Decision</th>
+                            <th>Comments</th>
+                            <th>Evaluated At</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php if (!$decisionHistory): ?><tr class="empty-row">
+                                <td colspan="6">No evaluation records found for the selected filter.</td>
+                            </tr><?php endif; ?>
+                        <?php foreach ($decisionHistory as $d): ?>
+                            <tr>
+                                <td><?= htmlspecialchars(fullName($d)) ?></td>
+                                <td><?= htmlspecialchars($d['position_title']) ?> — <?= htmlspecialchars($d['worksite_country']) ?></td>
+                                <td><?= htmlspecialchars(ucfirst($d['evaluation_type'] ?? '')) ?></td>
+                                <td><span class="badge <?= decisionBadgeClass($d['decision']) ?>"><?= htmlspecialchars(ucwords(str_replace('_', ' ', $d['decision'] ?? '—'))) ?></span></td>
+                                <td><?= htmlspecialchars($d['comments'] ?: '—') ?></td>
+                                <td><?= htmlspecialchars(date('M j, Y g:i A', strtotime($d['evaluated_at']))) ?></td>
+                            </tr>
+                        <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
+        <!-- ══════════════════════════ REPORT 3: MY APPROVAL RATE & TURNAROUND ══════════════════════════ -->
+        <section class="report-section" id="rep-rate">
+            <div class="report-card">
+                <h2><i class="fas fa-gauge-high" style="color:var(--ok)"></i> My Approval Rate &amp; Turnaround</h2>
+                <p class="sub">Based on final decisions only (approved / disapproved). Turnaround = days between an application's submission and my final decision.</p>
+
+                <div class="tiles">
+                    <div class="tile">
+                        <div class="tv"><?= $finalTotal ?></div>
+                        <div class="tl">Final Decisions Made</div>
+                    </div>
+                    <div class="tile">
+                        <div class="tv"><?= $approvedCount ?></div>
+                        <div class="tl">Approved</div>
+                    </div>
+                    <div class="tile">
+                        <div class="tv"><?= $disapprovedCount ?></div>
+                        <div class="tl">Disapproved</div>
+                    </div>
+                    <div class="tile">
+                        <div class="tv"><?= $approvalRate !== null ? $approvalRate . '%' : '—' ?></div>
+                        <div class="tl">Approval Rate</div>
+                    </div>
+                    <div class="tile">
+                        <div class="tv"><?= $avgTurnaround !== null ? $avgTurnaround : '—' ?></div>
+                        <div class="tl">Avg. Turnaround (days)</div>
+                    </div>
+                    <div class="tile">
+                        <div class="tv"><?= $complianceCount ?></div>
+                        <div class="tl">Sent Back For Compliance</div>
+                    </div>
+                </div>
+
+                <div class="chart-wrap"><canvas id="chartApprovalRate"></canvas></div>
+
+                <h2 style="font-size:13px;margin-top:24px"><i class="fas fa-chart-line" style="color:var(--blue-lt)"></i> Monthly Decisions</h2>
+                <table class="report-table" id="tbl-monthly-decisions">
+                    <thead>
+                        <tr>
+                            <th>Month</th>
+                            <th>Approved</th>
+                            <th>Disapproved</th>
+                            <th>Total</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php if (!$monthlyDecisions): ?><tr class="empty-row">
+                                <td colspan="4">No final decisions found for the selected filter.</td>
+                            </tr><?php endif; ?>
+                        <?php foreach ($monthlyDecisions as $m): ?>
+                            <tr>
+                                <td><?= htmlspecialchars(date('M Y', strtotime($m['ym'] . '-01'))) ?></td>
+                                <td><?= (int) $m['approved'] ?></td>
+                                <td><?= (int) $m['disapproved'] ?></td>
+                                <td><?= (int) $m['approved'] + (int) $m['disapproved'] ?></td>
+                            </tr>
+                        <?php endforeach; ?>
+                    </tbody>
+                </table>
+
+                <p class="sub" style="margin-top:10px">
+                    Fastest decision: <b><?= $turnaroundStats['min_days'] ?? '—' ?> day(s)</b> &nbsp;•&nbsp;
+                    Slowest decision: <b><?= $turnaroundStats['max_days'] ?? '—' ?> day(s)</b>
+                </p>
+            </div>
+        </section>
+
+        <!-- ══════════════════════════ REPORT 4: MY DOCUMENT COMPLIANCE ══════════════════════════ -->
+        <section class="report-section" id="rep-doccompliance">
+            <div class="report-card">
+                <h2><i class="fas fa-file-circle-check" style="color:var(--ok)"></i> My Document Compliance</h2>
+                <p class="sub">Required vs. submitted documents for applications that have been assigned to me.</p>
+
+                <div class="tiles">
+                    <div class="tile">
+                        <div class="tv"><?= count($docCompliance) ?></div>
+                        <div class="tl">Applications Checked</div>
+                    </div>
+                    <div class="tile">
+                        <div class="tv" style="color:var(--ok)"><?= $docCompleteCount ?></div>
+                        <div class="tl">Fully Compliant</div>
+                    </div>
+                    <div class="tile">
+                        <div class="tv" style="color:var(--red)"><?= $docIncompleteCount ?></div>
+                        <div class="tl">Incomplete</div>
+                    </div>
+                    <div class="tile">
+                        <div class="tv"><?= $docAvgCompletion ?>%</div>
+                        <div class="tl">Avg. Completion</div>
+                    </div>
+                </div>
+
+                <table class="report-table" id="tbl-doccompliance">
+                    <thead>
+                        <tr>
+                            <th>Applicant</th>
+                            <th>RSF #</th>
+                            <th>Employer</th>
+                            <th>Required</th>
+                            <th>Submitted</th>
+                            <th>Completion</th>
+                            <th>Missing Documents</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php if (!$docCompliance): ?><tr class="empty-row">
+                                <td colspan="7">No applications have been assigned to you yet for the selected filter.</td>
+                            </tr><?php endif; ?>
+                        <?php foreach ($docCompliance as $d): ?>
+                            <tr>
+                                <td><?= htmlspecialchars(fullName($d)) ?></td>
+                                <td><?= htmlspecialchars($d['rsf_number']) ?></td>
+                                <td><?= htmlspecialchars($d['employer_name']) ?></td>
+                                <td><?= (int) $d['required_count'] ?></td>
+                                <td><?= (int) $d['submitted_count'] ?></td>
+                                <td><span class="badge <?= $d['completion_pct'] == 100 ? 'b-approved' : 'b-disapproved' ?>"><?= (int) $d['completion_pct'] ?>%</span></td>
+                                <td><?= htmlspecialchars($d['missing_documents']) ?></td>
+                            </tr>
+                        <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
+        <p class="footer-note">DMW Regional Office IV-A — CALABARZON &nbsp;•&nbsp; Generated automatically from your Evaluator Portal &nbsp;•&nbsp; For official use only</p>
+    </div>
+
+    <!-- ── JAVASCRIPT ────────────────────────────────────────────────── -->
+    <script>
+        const REPORT_TITLES = {
+            'rep-workload': 'My Workload Summary',
+            'rep-decisions': 'My Decision History',
+            'rep-rate': 'My Approval Rate and Turnaround',
+            'rep-doccompliance': 'My Document Compliance'
+        };
+
+        /* ── Tab switching ───────────────────────────────────────── */
+        document.querySelectorAll('.tab-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+                document.querySelectorAll('.report-section').forEach(s => s.classList.remove('active'));
+                btn.classList.add('active');
+                document.getElementById(btn.dataset.target).classList.add('active');
+            });
+        });
+
+        function activeSectionId() {
+            return document.querySelector('.report-section.active').id;
+        }
+
+        /* ── Print ───────────────────────────────────────────────── */
+        function printCurrent() {
+            window.print();
+        }
+
+        function printAll() {
+            document.body.classList.add('print-all');
+            window.print();
+        }
+
+        window.addEventListener('afterprint', () => {
+            document.body.classList.remove('print-all');
+        });
+
+        /* ── Excel export (SheetJS) ──────────────────────────────── */
+        function tablesInSection(sectionId) {
+            return Array.from(document.querySelectorAll('#' + sectionId + ' table.report-table'));
+        }
+
+        function safeSheetName(name) {
+            return name.replace(/[\\\/\?\*\[\]:]/g, ' ').substring(0, 31);
+        }
+
+        function exportCurrent() {
+            const id = activeSectionId();
+            const tables = tablesInSection(id);
+            if (!tables.length) return;
+
+            const wb = XLSX.utils.book_new();
+            tables.forEach((tbl, i) => {
+                const ws = XLSX.utils.table_to_sheet(tbl);
+                const name = safeSheetName(tables.length > 1 ? `${REPORT_TITLES[id]} ${i + 1}` : REPORT_TITLES[id]);
+                XLSX.utils.book_append_sheet(wb, ws, name || `Sheet${i + 1}`);
+            });
+            XLSX.writeFile(wb, `${EVALUATOR_FILE_SLUG}_${REPORT_TITLES[id].replace(/\s+/g, '_')}.xlsx`);
+        }
+
+        function exportAll() {
+            const wb = XLSX.utils.book_new();
+            document.querySelectorAll('.report-section').forEach(section => {
+                const tables = tablesInSection(section.id);
+                tables.forEach((tbl, i) => {
+                    const ws = XLSX.utils.table_to_sheet(tbl);
+                    const baseName = REPORT_TITLES[section.id] || section.id;
+                    const name = safeSheetName(tables.length > 1 ? `${baseName} ${i + 1}` : baseName);
+                    XLSX.utils.book_append_sheet(wb, ws, name || section.id);
+                });
+            });
+            XLSX.writeFile(wb, `${EVALUATOR_FILE_SLUG}_Evaluator_Reports.xlsx`);
+        }
+
+        /* ── Filename helper — evaluator name, filesystem-safe ───── */
+        const EVALUATOR_FILE_SLUG = <?= json_encode($evaluator_name) ?>
+            .replace(/[\\\/:*?"<>|]/g, '') // strip characters illegal in filenames
+            .trim()
+            .replace(/\s+/g, '_');
+
+        /* ── PDF export (jsPDF + AutoTable) ──────────────────────── */
+        const PDF_META = {
+            evaluator: <?= json_encode($evaluator_name) ?>,
+            generatedAt: <?= json_encode($generatedAt) ?>,
+            filter: <?= json_encode($filterRecap) ?>
+        };
+
+        function pdfAddLetterhead(doc, title) {
+            doc.setFontSize(13);
+            doc.setFont(undefined, 'bold');
+            doc.text('Department of Migrant Workers — Regional Office IV-A', 40, 40);
+            doc.setFontSize(10);
+            doc.setFont(undefined, 'normal');
+            doc.text(title, 40, 58);
+            doc.setFontSize(9);
+            doc.setTextColor(100);
+            doc.text(`Evaluator: ${PDF_META.evaluator}`, 40, 76);
+            doc.text(`Generated: ${PDF_META.generatedAt}`, 40, 90);
+            doc.text(`Filter: ${PDF_META.filter}`, 40, 104);
+            doc.setTextColor(0);
+            return 128; // next Y position
+        }
+
+        function pdfAddTiles(doc, sectionId, startY) {
+            const tiles = document.querySelectorAll('#' + sectionId + ' .tile');
+            if (!tiles.length) return startY;
+
+            let x = 40,
+                y = startY,
+                col = 0;
+            const colWidth = 150,
+                rowHeight = 34;
+
+            tiles.forEach(t => {
+                const val = t.querySelector('.tv')?.textContent?.trim() ?? '';
+                const label = t.querySelector('.tl')?.textContent?.trim() ?? '';
+
+                doc.setFontSize(11);
+                doc.setFont(undefined, 'bold');
+                doc.text(val, x, y);
+
+                doc.setFontSize(7);
+                doc.setFont(undefined, 'normal');
+                doc.setTextColor(100);
+                doc.text(label, x, y + 12, {
+                    maxWidth: colWidth - 10
+                });
+                doc.setTextColor(0);
+
+                col++;
+                x += colWidth;
+                if (col % 6 === 0) {
+                    x = 40;
+                    y += rowHeight;
+                }
+            });
+
+            if (col % 6 !== 0) y += rowHeight;
+            return y + 14;
+        }
+
+        function pdfAddTables(doc, sectionId, startY) {
+            const tables = tablesInSection(sectionId);
+            let y = startY;
+
+            tables.forEach(tbl => {
+                doc.autoTable({
+                    html: tbl,
+                    startY: y,
+                    styles: {
+                        fontSize: 7,
+                        cellPadding: 3,
+                        overflow: 'linebreak'
+                    },
+                    headStyles: {
+                        fillColor: [29, 78, 216],
+                        textColor: 255
+                    },
+                    alternateRowStyles: {
+                        fillColor: [248, 250, 252]
+                    },
+                    margin: {
+                        left: 40,
+                        right: 40
+                    },
+                    theme: 'grid'
+                });
+                y = doc.lastAutoTable.finalY + 24;
+            });
+
+            return y;
+        }
+
+        function exportCurrentPDF() {
+            const id = activeSectionId();
+            const {
+                jsPDF
+            } = window.jspdf;
+            const doc = new jsPDF({
+                orientation: 'landscape',
+                unit: 'pt',
+                format: 'a4'
+            });
+
+            let y = pdfAddLetterhead(doc, REPORT_TITLES[id]);
+            y = pdfAddTiles(doc, id, y);
+            pdfAddTables(doc, id, y);
+
+            doc.save(`${EVALUATOR_FILE_SLUG}_${REPORT_TITLES[id].replace(/\s+/g, '_')}.pdf`);
+        }
+
+        function exportAllPDF() {
+            const {
+                jsPDF
+            } = window.jspdf;
+            const doc = new jsPDF({
+                orientation: 'landscape',
+                unit: 'pt',
+                format: 'a4'
+            });
+
+            document.querySelectorAll('.report-section').forEach((section, i) => {
+                if (i > 0) doc.addPage();
+                let y = pdfAddLetterhead(doc, REPORT_TITLES[section.id] || section.id);
+                y = pdfAddTiles(doc, section.id, y);
+                pdfAddTables(doc, section.id, y);
+            });
+
+            doc.save(`${EVALUATOR_FILE_SLUG}_Evaluator_Reports.pdf`);
+        }
+
+        /* ── Charts ──────────────────────────────────────────────── */
+
+        /* ── Charts ──────────────────────────────────────────────── */
+        const monthlyLabels = <?= json_encode(array_map(fn($r) => date('M Y', strtotime($r['ym'] . '-01')), $monthlyAssigned)) ?>;
+        const monthlyData = <?= json_encode(array_map('intval', array_column($monthlyAssigned, 'cnt'))) ?>;
+        new Chart(document.getElementById('chartMonthlyAssigned'), {
+            type: 'bar',
+            data: {
+                labels: monthlyLabels,
+                datasets: [{
+                    label: 'Assignments Received',
+                    data: monthlyData,
+                    backgroundColor: 'rgba(29,78,216,.15)',
+                    borderColor: '#1d4ed8',
+                    borderWidth: 2,
+                    borderRadius: 6,
+                    borderSkipped: false
+                }]
+            },
+            options: {
+                plugins: {
+                    legend: {
+                        display: false
+                    }
+                },
+                scales: {
+                    y: {
+                        beginAtZero: true,
+                        ticks: {
+                            precision: 0
+                        }
+                    }
+                }
+            }
+        });
+
+        new Chart(document.getElementById('chartApprovalRate'), {
+            type: 'doughnut',
+            data: {
+                labels: ['Approved', 'Disapproved'],
+                datasets: [{
+                    data: [<?= $approvedCount ?>, <?= $disapprovedCount ?>],
+                    backgroundColor: ['#059669', '#dc2626']
+                }]
+            },
+            options: {
+                plugins: {
+                    legend: {
+                        position: 'bottom',
+                        labels: {
+                            font: {
+                                size: 11
                             }
                         }
-                        echo $fastest !== null ? $fastest . ' hrs' : '—';
-                        ?>
-                    </div>
-                </div>
-            </div>
+                    }
+                }
+            }
+        });
 
-            <div class="card fade-in d3">
-                <div class="card-head">
-                    <span class="card-title">
-                        <span class="ctdot" style="background:#059669"></span>
-                        Assignment-to-Decision Time
-                    </span>
-                </div>
-                <div class="table-wrap">
-                    <?php if (empty($turnaround_rows)): ?>
-                        <div class="empty-row">No completed evaluations to measure yet.</div>
-                    <?php else: ?>
-                        <table class="report-table">
-                            <thead>
-                                <tr>
-                                    <th>Applicant</th>
-                                    <th>RSF</th>
-                                    <th>Assigned</th>
-                                    <th>Evaluated</th>
-                                    <th>Time Taken</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                <?php foreach ($turnaround_rows as $t): ?>
-                                    <tr>
-                                        <td><?= htmlspecialchars($t['applicant_name']) ?></td>
-                                        <td><?= htmlspecialchars($t['rsf_number'] ?? '—') ?></td>
-                                        <td><?= $t['assigned_at'] ? date('M d, g:i A', strtotime($t['assigned_at'])) : '—' ?></td>
-                                        <td><?= $t['evaluated_at'] ? date('M d, g:i A', strtotime($t['evaluated_at'])) : '—' ?></td>
-                                        <td>
-                                            <strong style="color:var(--indigo)"><?= (int)$t['hours_taken'] ?> hrs</strong>
-                                        </td>
-                                    </tr>
-                                <?php endforeach; ?>
-                            </tbody>
-                        </table>
-                    <?php endif; ?>
-                </div>
-            </div>
-        </div>
+        /* ── Live date + time ────────────────────────────────────────────── */
+        function updateLiveDateTime() {
+            const el = document.getElementById('live-date');
+            if (!el) return;
 
-        <!-- ────────────────────────────────────
-             TAB 4: COMPLIANCE TRACKER
-        ──────────────────────────────────── -->
-        <div class="tab-panel" id="panel-compliance">
+            const now = new Date();
 
-            <div class="card fade-in d2">
-                <div class="card-head">
-                    <span class="card-title">
-                        <span class="ctdot" style="background:#d97706"></span>
-                        For-Compliance &amp; Resubmission Status
-                    </span>
-                </div>
-                <div class="table-wrap">
-                    <?php if (empty($compliance_rows)): ?>
-                        <div class="empty-row">No applications have been flagged for compliance.</div>
-                    <?php else: ?>
-                        <table class="report-table">
-                            <thead>
-                                <tr>
-                                    <th>Applicant</th>
-                                    <th>RSF</th>
-                                    <th>Flagged On</th>
-                                    <th>Resubmitted</th>
-                                    <th>Current Status</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                <?php foreach ($compliance_rows as $cr): ?>
-                                    <tr>
-                                        <td><?= htmlspecialchars($cr['applicant_name']) ?></td>
-                                        <td><?= htmlspecialchars($cr['rsf_number'] ?? '—') ?></td>
-                                        <td><?= $cr['flagged_at'] ? date('M d, Y', strtotime($cr['flagged_at'])) : '—' ?></td>
-                                        <td>
-                                            <?php if ($cr['resubmitted_at']): ?>
-                                                <?= date('M d, Y', strtotime($cr['resubmitted_at'])) ?>
-                                            <?php else: ?>
-                                                <span class="pill-small badge-incomplete">Awaiting</span>
-                                            <?php endif; ?>
-                                        </td>
-                                        <td>
-                                            <span class="status-pill pill-small <?= pillClass($cr['current_status']) ?>">
-                                                <?= htmlspecialchars(str_replace('_', ' ', ucwords($cr['current_status']))) ?>
-                                            </span>
-                                        </td>
-                                    </tr>
-                                <?php endforeach; ?>
-                            </tbody>
-                        </table>
-                    <?php endif; ?>
-                </div>
-            </div>
-        </div>
+            const datePart = now.toLocaleDateString('en-PH', {
+                weekday: 'short',
+                year: 'numeric',
+                month: 'short',
+                day: 'numeric'
+            }).toUpperCase();
 
-        <!-- ────────────────────────────────────
-             TAB 5: DOCUMENT CHECKLIST
-        ──────────────────────────────────── -->
-        <div class="tab-panel" id="panel-documents">
+            const timePart = now.toLocaleTimeString('en-PH', {
+                hour: 'numeric',
+                minute: '2-digit',
+                second: '2-digit',
+                hour12: true
+            }).toLowerCase();
 
-            <div class="card fade-in d2">
-                <div class="card-head">
-                    <span class="card-title">
-                        <span class="ctdot" style="background:var(--blue-lt)"></span>
-                        Document Completeness by Application
-                    </span>
-                </div>
-                <div class="table-wrap">
-                    <?php if (empty($doc_checklist)): ?>
-                        <div class="empty-row">No active assignments to check documents for.</div>
-                    <?php else: ?>
-                        <table class="report-table">
-                            <thead>
-                                <tr>
-                                    <th>Applicant</th>
-                                    <th>RSF</th>
-                                    <th>Progress</th>
-                                    <th>Status</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                <?php foreach ($doc_checklist as $dc): ?>
-                                    <?php
-                                    $required = (int)$dc['required_count'];
-                                    $uploaded = (int)$dc['uploaded_count'];
-                                    $pct      = $required > 0 ? round(($uploaded / $required) * 100) : 0;
-                                    $complete = $required > 0 && $uploaded >= $required;
-                                    ?>
-                                    <tr>
-                                        <td><?= htmlspecialchars($dc['applicant_name']) ?></td>
-                                        <td><?= htmlspecialchars($dc['rsf_number'] ?? '—') ?></td>
-                                        <td>
-                                            <div class="doc-progress-wrap">
-                                                <div class="doc-progress-bar">
-                                                    <div class="doc-progress-fill"
-                                                        style="width:<?= $pct ?>%;background:<?= $complete ? '#059669' : '#d97706' ?>">
-                                                    </div>
-                                                </div>
-                                                <span class="doc-progress-text"><?= $uploaded ?>/<?= $required ?></span>
-                                            </div>
-                                        </td>
-                                        <td>
-                                            <span class="pill-small <?= $complete ? 'badge-complete' : 'badge-incomplete' ?>">
-                                                <?= $complete ? 'Complete' : 'Incomplete' ?>
-                                            </span>
-                                        </td>
-                                    </tr>
-                                <?php endforeach; ?>
-                            </tbody>
-                        </table>
-                    <?php endif; ?>
-                </div>
-            </div>
-        </div>
+            el.textContent = `${datePart} | ${timePart}`;
+        }
 
-    </div><!-- /main -->
+        updateLiveDateTime();
+        setInterval(updateLiveDateTime, 1000); // refresh every second
 
+        /* ── Filter form: submit on change, and guard the Apply click ── */
+        document.getElementById('filter-month')?.addEventListener('change', () => {
+            document.getElementById('reportFilterForm').submit();
+        });
 
-    <!-- ══════════════════════════════════════════
-         FLOATING DOCK  (exact dashboard.php structure)
-    ══════════════════════════════════════════ -->
-    <div class="dock-wrap">
+        function toggleFlyout(e, id) {
+            e.stopPropagation();
+            const el = document.getElementById(id);
+            const wasOpen = el.classList.contains('open');
+            document.querySelectorAll('.flyout').forEach(f => f.classList.remove('open'));
+            if (!wasOpen) el.classList.add('open');
+        }
+        document.addEventListener('click', () => {
+            document.querySelectorAll('.flyout').forEach(f => f.classList.remove('open'));
+        });
+    </script>
+
+    <!--FLOATING DOCK  (exact dashboard.php structure -->
+    <div class="dock-wrap no-print">
         <nav class="dock">
 
             <a href="index.php" class="dk">
                 <i class="fas fa-house"></i>
                 <span class="dk-lbl">Home</span>
             </a>
-
             <a href="applications.php" class="dk">
                 <i class="fas fa-list"></i>
                 <span class="dk-lbl">Tasks</span>
+                <?php if ($my_assigned_count > 0): ?>
+                    <span class="dk-badge"><?= $my_assigned_count > 99 ? '99+' : $my_assigned_count ?></span>
+                <?php endif; ?>
             </a>
 
             <div class="dk-div"></div>
@@ -875,7 +1432,7 @@ function pillClass(string $status): string
 
             <div class="dk-div"></div>
 
-            <a href="settings.html" class="dk">
+            <a href="settings.php" class="dk">
                 <i class="fas fa-gear"></i>
                 <span class="dk-lbl">Settings</span>
             </a>
@@ -888,31 +1445,8 @@ function pillClass(string $status): string
         </nav>
     </div>
 
-    <script>
-        document.getElementById('live-date').textContent =
-            new Date().toLocaleDateString('en-PH', {
-                weekday: 'short',
-                year: 'numeric',
-                month: 'short',
-                day: 'numeric'
-            }).toUpperCase();
-
-        // Tab switching
-        const tabBtns = document.querySelectorAll('.tab-btn');
-        const panels = document.querySelectorAll('.tab-panel');
-
-        tabBtns.forEach(btn => {
-            btn.addEventListener('click', () => {
-                tabBtns.forEach(b => b.classList.remove('active'));
-                panels.forEach(p => p.classList.remove('active'));
-
-                btn.classList.add('active');
-                document.getElementById('panel-' + btn.dataset.tab).classList.add('active');
-            });
-        });
-    </script>
     <script type="module" src="../js/main.js"></script>
-
+    <?php include '../includes/login_toast.php'; ?>
 </body>
 
 </html>

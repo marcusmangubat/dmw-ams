@@ -3,10 +3,8 @@
 /**
  * dashboard-api.php
  * DMW RO IV-A – Admin Dashboard Backend
- *
  * Drop this file next to dashboard.php (inside your admin/ folder).
  * dashboard.php calls it via fetch() with ?action=<name>
- *
  * Actions: stats | monthly | status | job_orders | destinations | report | notifications
  */
 
@@ -24,8 +22,7 @@ header('Content-Type: application/json');
 
 $action = $_GET['action'] ?? '';
 
-/* ═══════════════════════════════════════════════════════════════════
-   FILTER HELPER
+/* FILTER HELPER
    Reads ?month=YYYY-MM & ?province= & ?job_type= & ?country= from the
    querystring and turns them into reusable JOIN + WHERE + bind-param
    fragments. Every report query below threads through this so the
@@ -33,8 +30,7 @@ $action = $_GET['action'] ?? '';
    ─ month     → applications.submitted_at within that month
    ─ province  → clients.province        (needs JOIN clients)
    ─ job_type  → rsf_job_orders.position_title  (needs JOIN rsf_job_orders)
-   ─ country   → rsf_job_orders.worksite_country (needs JOIN rsf_job_orders)
-═══════════════════════════════════════════════════════════════════ */
+   ─ country   → rsf_job_orders.worksite_country (needs JOIN rsf_job_orders)*/
 function buildFilters(string $appAlias = 'a'): array
 {
     $month    = trim($_GET['month'] ?? '');
@@ -179,51 +175,55 @@ function getStats(mysqli $db, array $f): array
     $approved  = $counts['approved']         ?? 0;
     $unassign  = $counts['unassign']         ?? 0;
 
-    // Month-over-month: use the selected month filter as "this month" if
-    // present, otherwise fall back to the real current month.
-    if ($f['month'] !== '' && preg_match('/^\d{4}-\d{2}$/', $f['month'])) {
+    // Month-over-month is only meaningful when a specific month is selected.
+    // "All Time" (empty month) has no single month to compare against, so
+    // both change percentages stay null and the UI falls back to its
+    // existing "All time" label instead of showing a misleading % change.
+    $isAllTime = ($f['month'] === '');
+    $changePct = null;
+    $approvedChangePct = null;
+
+    if (!$isAllTime) {
         $thisStart = $f['month'] . '-01 00:00:00';
-    } else {
-        $thisStart = date('Y-m-01 00:00:00');
+        $thisEnd   = date('Y-m-t 23:59:59', strtotime($thisStart));
+        $prevStart = date('Y-m-01 00:00:00', strtotime($thisStart . ' -1 month'));
+        $prevEnd   = date('Y-m-t 23:59:59',  strtotime($thisStart . ' -1 month'));
+
+        $sql  = "SELECT COUNT(*) FROM applications a {$f['join']} WHERE a.submitted_at BETWEEN ? AND ? {$f['where']}";
+        $stmt = $db->prepare($sql);
+        bindDynamic($stmt, 'ss' . $f['types'], array_merge([$thisStart, $thisEnd], $f['params']));
+        $stmt->execute();
+        $thisMo = (int) $stmt->get_result()->fetch_row()[0];
+        $stmt->close();
+
+        $stmt = $db->prepare($sql);
+        bindDynamic($stmt, 'ss' . $f['types'], array_merge([$prevStart, $prevEnd], $f['params']));
+        $stmt->execute();
+        $prevMo = (int) $stmt->get_result()->fetch_row()[0];
+        $stmt->close();
+
+        $changePct = $prevMo > 0
+            ? round((($thisMo - $prevMo) / $prevMo) * 100, 1)
+            : null;
+
+        // Approved this month vs last (filtered)
+        $sql  = "SELECT COUNT(*) FROM applications a {$f['join']} WHERE a.status = 'approved' AND a.updated_at BETWEEN ? AND ? {$f['where']}";
+        $stmt = $db->prepare($sql);
+        bindDynamic($stmt, 'ss' . $f['types'], array_merge([$thisStart, $thisEnd], $f['params']));
+        $stmt->execute();
+        $thisApproved = (int) $stmt->get_result()->fetch_row()[0];
+        $stmt->close();
+
+        $stmt = $db->prepare($sql);
+        bindDynamic($stmt, 'ss' . $f['types'], array_merge([$prevStart, $prevEnd], $f['params']));
+        $stmt->execute();
+        $prevApproved = (int) $stmt->get_result()->fetch_row()[0];
+        $stmt->close();
+
+        $approvedChangePct = $prevApproved > 0
+            ? round((($thisApproved - $prevApproved) / $prevApproved) * 100, 1)
+            : null;
     }
-    $thisEnd   = date('Y-m-t 23:59:59', strtotime($thisStart));
-    $prevStart = date('Y-m-01 00:00:00', strtotime($thisStart . ' -1 month'));
-    $prevEnd   = date('Y-m-t 23:59:59',  strtotime($thisStart . ' -1 month'));
-
-    $sql  = "SELECT COUNT(*) FROM applications a {$f['join']} WHERE a.submitted_at BETWEEN ? AND ? {$f['where']}";
-    $stmt = $db->prepare($sql);
-    bindDynamic($stmt, 'ss' . $f['types'], array_merge([$thisStart, $thisEnd], $f['params']));
-    $stmt->execute();
-    $thisMo = (int) $stmt->get_result()->fetch_row()[0];
-    $stmt->close();
-
-    $stmt = $db->prepare($sql);
-    bindDynamic($stmt, 'ss' . $f['types'], array_merge([$prevStart, $prevEnd], $f['params']));
-    $stmt->execute();
-    $prevMo = (int) $stmt->get_result()->fetch_row()[0];
-    $stmt->close();
-
-    $changePct = $prevMo > 0
-        ? round((($thisMo - $prevMo) / $prevMo) * 100, 1)
-        : null;
-
-    // Approved this month vs last (filtered)
-    $sql  = "SELECT COUNT(*) FROM applications a {$f['join']} WHERE a.status = 'approved' AND a.updated_at BETWEEN ? AND ? {$f['where']}";
-    $stmt = $db->prepare($sql);
-    bindDynamic($stmt, 'ss' . $f['types'], array_merge([$thisStart, $thisEnd], $f['params']));
-    $stmt->execute();
-    $thisApproved = (int) $stmt->get_result()->fetch_row()[0];
-    $stmt->close();
-
-    $stmt = $db->prepare($sql);
-    bindDynamic($stmt, 'ss' . $f['types'], array_merge([$prevStart, $prevEnd], $f['params']));
-    $stmt->execute();
-    $prevApproved = (int) $stmt->get_result()->fetch_row()[0];
-    $stmt->close();
-
-    $approvedChangePct = $prevApproved > 0
-        ? round((($thisApproved - $prevApproved) / $prevApproved) * 100, 1)
-        : null;
 
     // Average evaluation days (submitted → evaluated), filtered
     $sql = "SELECT AVG(DATEDIFF(e.evaluated_at, a.submitted_at)) AS avg_days
@@ -250,11 +250,9 @@ function getStats(mysqli $db, array $f): array
     ];
 }
 
-/* ═══════════════════════════════════════════════════════════════════
-   2. MONTHLY BAR CHART
-   ─ Applications submitted per month (current year)
-   ─ Approved per month (current year)
-═══════════════════════════════════════════════════════════════════ */
+/* 2. MONTHLY BAR CHART
+Applications submitted per month (current year)
+Approved per month (current year) */
 function getMonthly(mysqli $db, array $f): array
 {
     $year      = (int) date('Y');
@@ -294,9 +292,7 @@ function getMonthly(mysqli $db, array $f): array
     ];
 }
 
-/* ═══════════════════════════════════════════════════════════════════
-   3. STATUS BREAKDOWN BARS
-═══════════════════════════════════════════════════════════════════ */
+/* 3. STATUS BREAKDOWN BARS*/
 function getStatusBreakdown(mysqli $db, array $f): array
 {
     $order = [
@@ -342,9 +338,7 @@ function getStatusBreakdown(mysqli $db, array $f): array
     return $result;
 }
 
-/* ═══════════════════════════════════════════════════════════════════
-   4. ACTIVE JOB ORDERS (deadline not yet passed)
-═══════════════════════════════════════════════════════════════════ */
+/* 4. ACTIVE JOB ORDERS (deadline not yet passed)*/
 function getJobOrders(mysqli $db, array $f): array
 {
     // Pull job_type/country straight from the querystring — these filters
@@ -407,9 +401,7 @@ function getJobOrders(mysqli $db, array $f): array
     return $jobs;
 }
 
-/* ═══════════════════════════════════════════════════════════════════
-   5. DESTINATION COUNTRIES DOUGHNUT
-═══════════════════════════════════════════════════════════════════ */
+/* 5. DESTINATION COUNTRIES DOUGHNUT */
 function getDestinations(mysqli $db, array $f): array
 {
     $sql = "SELECT j.worksite_country AS country, COUNT(a.id) AS cnt
@@ -440,13 +432,11 @@ function getDestinations(mysqli $db, array $f): array
     return ['labels' => $labels, 'data' => $data, 'colors' => $colors];
 }
 
-/* ═══════════════════════════════════════════════════════════════════
-   6b. REPORT ROWS — the actual filtered application records, used by
+/*  6b. REPORT ROWS — the actual filtered application records, used by
    report.php to render a printable / PDF-exportable table. Applies
    the exact same month / province / job_type / country filters as
    the rest of the dashboard, so "print" always matches what the
-   admin currently has selected in the subbar.
-═══════════════════════════════════════════════════════════════════ */
+   admin currently has selected in the subbar. */
 function getReportRows(mysqli $db, array $f): array
 {
     // Always need clients (applicant name) and rsf_job_orders (job/country)
@@ -517,9 +507,7 @@ function getReportRows(mysqli $db, array $f): array
     ];
 }
 
-/* ═══════════════════════════════════════════════════════════════════
-   7. DISTINCT JOB TYPES (for the "All Job Types" filter pill)
-═══════════════════════════════════════════════════════════════════ */
+/*7. DISTINCT JOB TYPES (for the "All Job Types" filter pill) */
 function getJobTypes(mysqli $db): array
 {
     $res = $db->query(
@@ -534,9 +522,7 @@ function getJobTypes(mysqli $db): array
     return $types;
 }
 
-/* ═══════════════════════════════════════════════════════════════════
-   6. ADMIN NOTIFICATIONS
-═══════════════════════════════════════════════════════════════════ */
+/* 6. ADMIN NOTIFICATIONS */
 function getNotifications(mysqli $db, string $admin_email): array
 {
     $stmt = $db->prepare(
@@ -581,7 +567,7 @@ function markAllRead(mysqli $db, string $admin_email): void
     $stmt->close();
 }
 
-/* ─── Helper ─────────────────────────────────────────────────────── */
+/*  Helper  */
 function timeAgo(string $datetime): string
 {
     $diff = time() - strtotime($datetime);

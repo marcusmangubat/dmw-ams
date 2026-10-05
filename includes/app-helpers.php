@@ -615,3 +615,86 @@ function notify_admins($db, $title, $message, $type = 'system', $application_id 
 
     return $success;
 }
+
+/**
+ * Get an applicant's display name for a given application, for use in
+ * evaluator/admin-facing notification messages.
+ *
+ * @param mysqli $db
+ * @param int $application_id
+ * @return string
+ */
+function get_applicant_name($db, $application_id)
+{
+    $application_id = (int) $application_id;
+    $name = 'the applicant';
+    $stmt = $db->prepare("
+        SELECT CONCAT(c.first_name, ' ', c.last_name) AS applicant_name
+        FROM applications a
+        JOIN clients c ON a.client_id = c.cid
+        WHERE a.id = ?
+        LIMIT 1
+    ");
+    $stmt->bind_param("i", $application_id);
+    $stmt->execute();
+    $row = $stmt->get_result()->fetch_assoc();
+    $stmt->close();
+    if (!empty($row['applicant_name'])) {
+        $name = trim($row['applicant_name']);
+    }
+    return $name;
+}
+
+/**
+ * Create an evaluator notification for system-wide events.
+ * Notifies ALL evaluators about important system events (e.g. a brand new
+ * application entering the pool, before anyone has claimed it). Use
+ * notify_evaluator_for_application() instead when a single evaluator
+ * already owns the case via an active assignment.
+ *
+ * @param mysqli $db
+ * @param string $title
+ * @param string $message
+ * @param string|null $type
+ * @param int|null $application_id Optional application context
+ * @return bool
+ */
+function notify_evaluators($db, $title, $message, $type = 'system', $application_id = null)
+{
+    $title = trim((string) $title);
+    $message = trim((string) $message);
+    $type = $type !== null ? trim((string) $type) : null;
+    if ($title === '' || $message === '') return false;
+
+    // Get all evaluator emails
+    $stmt = $db->prepare("SELECT email FROM evaluators");
+    if (!$stmt) return false;
+    $stmt->execute();
+    $result = $stmt->get_result();
+    $evaluators = $result->fetch_all(MYSQLI_ASSOC);
+    $stmt->close();
+
+    if (empty($evaluators)) return false;
+
+    $usertype = 'evaluator';
+    $application_id = $application_id ? (int) $application_id : null;
+
+    $success = true;
+    foreach ($evaluators as $evaluator) {
+        $user_email = (string) $evaluator['email'];
+        $stmt = $db->prepare("
+            INSERT INTO notifications (user_email, usertype, application_id, title, message, type, is_read)
+            VALUES (?, ?, ?, ?, ?, ?, 0)
+        ");
+        if (!$stmt) {
+            $success = false;
+            continue;
+        }
+        $stmt->bind_param("ssisss", $user_email, $usertype, $application_id, $title, $message, $type);
+        $ok = $stmt->execute();
+        $stmt->close();
+        if (!$ok) $success = false;
+    }
+
+    return $success;
+}

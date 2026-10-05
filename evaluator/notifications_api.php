@@ -1,4 +1,5 @@
 <?php
+
 declare(strict_types=1);
 
 session_start();
@@ -59,12 +60,22 @@ if ($method === 'POST' && $action === 'mark_read') {
 
 // ====================== DEFAULT: LIST NOTIFICATIONS ======================
 $limit = 20;
-
 $stmt = $database->prepare("
-    SELECT id, application_id, title, message, type, is_read, created_at
-    FROM notifications
-    WHERE user_email = ? AND usertype = ?
-    ORDER BY created_at DESC
+    SELECT
+        n.id,
+        n.application_id,
+        n.title,
+        n.message,
+        n.type,
+        n.is_read,
+        n.created_at,
+        c.first_name,
+        c.last_name
+    FROM notifications n
+    LEFT JOIN applications a ON n.application_id = a.id
+    LEFT JOIN clients c ON a.client_id = c.cid
+    WHERE n.user_email = ? AND n.usertype = ?
+    ORDER BY n.created_at DESC
     LIMIT ?
 ");
 $stmt->bind_param('ssi', $userEmail, $userType, $limit);

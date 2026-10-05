@@ -31,14 +31,29 @@ $status_filter  = in_array($status_filter, $valid_statuses, true) ? $status_filt
 // Search box — matches applicant name, email, position, or employer.
 $search_filter = trim($_GET['q'] ?? '');
 
-$applications = [];
+// Pagination
+$per_page = 10;
+$page     = max(1, (int) ($_GET['page'] ?? 1));
+
+$applications   = [];
+$total_filtered = 0;
+$total_pages    = 1;
 
 if ($status_filter === 'available') {
     $sql = "
         SELECT a.id, a.status, a.updated_at,
                r.rsf_number, r.position_title, r.worksite_country AS country, r.employer_name,
                CONCAT(c.first_name, ' ', c.last_name) AS applicant_name,
-               c.email AS applicant_email
+               c.email AS applicant_email,
+               c.profile_picture AS applicant_picture
+        FROM applications a
+        JOIN rsf_job_orders r ON a.rsf_id = r.id
+        LEFT JOIN clients   c ON a.client_id = c.cid
+        WHERE a.handling_party IS NULL
+          AND a.status IN ('pending','assign','assigned','resubmitted')
+    ";
+    $countSql = "
+        SELECT COUNT(*) AS cnt
         FROM applications a
         JOIN rsf_job_orders r ON a.rsf_id = r.id
         LEFT JOIN clients   c ON a.client_id = c.cid
@@ -49,7 +64,7 @@ if ($status_filter === 'available') {
     $types  = "";
 
     if ($search_filter !== '') {
-        $sql .= " AND (
+        $searchCond = " AND (
             CONCAT(c.first_name, ' ', c.last_name) LIKE ?
             OR c.email LIKE ?
             OR r.position_title LIKE ?
@@ -57,17 +72,32 @@ if ($status_filter === 'available') {
             OR r.rsf_number LIKE ?
             OR r.worksite_country LIKE ?
         )";
+        $sql      .= $searchCond;
+        $countSql .= $searchCond;
         $like = '%' . $search_filter . '%';
         array_push($params, $like, $like, $like, $like, $like, $like);
         $types .= "ssssss";
     }
 
-    $sql .= " ORDER BY a.updated_at ASC";
+    $stmt_count = $database->prepare($countSql);
+    if ($params) {
+        $stmt_count->bind_param($types, ...$params);
+    }
+    $stmt_count->execute();
+    $total_filtered = (int) ($stmt_count->get_result()->fetch_assoc()['cnt'] ?? 0);
+    $stmt_count->close();
+
+    $total_pages = max(1, (int) ceil($total_filtered / $per_page));
+    if ($page > $total_pages) $page = $total_pages;
+    $offset = ($page - 1) * $per_page;
+
+    $sql .= " ORDER BY a.updated_at ASC LIMIT ? OFFSET ?";
+    $params[] = $per_page;
+    $params[] = $offset;
+    $types   .= "ii";
 
     $stmt = $database->prepare($sql);
-    if ($params) {
-        $stmt->bind_param($types, ...$params);
-    }
+    $stmt->bind_param($types, ...$params);
     $stmt->execute();
     $applications = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
     $stmt->close();
@@ -76,7 +106,15 @@ if ($status_filter === 'available') {
         SELECT a.id, a.status, a.updated_at, a.handling_party,
                r.rsf_number, r.position_title, r.worksite_country AS country, r.employer_name,
                CONCAT(c.first_name, ' ', c.last_name) AS applicant_name,
-               c.email AS applicant_email
+               c.email AS applicant_email,
+               c.profile_picture AS applicant_picture
+        FROM applications a
+        JOIN rsf_job_orders  r ON a.rsf_id           = r.id
+        LEFT JOIN clients    c ON a.client_id        = c.cid
+        WHERE a.current_evaluator_id = ?
+    ";
+    $countSql = "
+        SELECT COUNT(*) AS cnt
         FROM applications a
         JOIN rsf_job_orders  r ON a.rsf_id           = r.id
         LEFT JOIN clients    c ON a.client_id        = c.cid
@@ -86,15 +124,17 @@ if ($status_filter === 'available') {
     $types  = "i";
 
     if ($status_filter === 'assign' || $status_filter === 'assigned') {
-        $sql .= " AND a.status IN ('assign','assigned')";
+        $sql      .= " AND a.status IN ('assign','assigned')";
+        $countSql .= " AND a.status IN ('assign','assigned')";
     } elseif ($status_filter) {
-        $sql .= " AND a.status = ?";
+        $sql      .= " AND a.status = ?";
+        $countSql .= " AND a.status = ?";
         $params[] = $status_filter;
         $types .= "s";
     }
 
     if ($search_filter !== '') {
-        $sql .= " AND (
+        $searchCond = " AND (
             CONCAT(c.first_name, ' ', c.last_name) LIKE ?
             OR c.email LIKE ?
             OR r.position_title LIKE ?
@@ -102,12 +142,27 @@ if ($status_filter === 'available') {
             OR r.rsf_number LIKE ?
             OR r.worksite_country LIKE ?
         )";
+        $sql      .= $searchCond;
+        $countSql .= $searchCond;
         $like = '%' . $search_filter . '%';
         array_push($params, $like, $like, $like, $like, $like, $like);
         $types .= "ssssss";
     }
 
-    $sql .= " ORDER BY a.updated_at DESC";
+    $stmt_count = $database->prepare($countSql);
+    $stmt_count->bind_param($types, ...$params);
+    $stmt_count->execute();
+    $total_filtered = (int) ($stmt_count->get_result()->fetch_assoc()['cnt'] ?? 0);
+    $stmt_count->close();
+
+    $total_pages = max(1, (int) ceil($total_filtered / $per_page));
+    if ($page > $total_pages) $page = $total_pages;
+    $offset = ($page - 1) * $per_page;
+
+    $sql .= " ORDER BY a.updated_at DESC LIMIT ? OFFSET ?";
+    $params[] = $per_page;
+    $params[] = $offset;
+    $types   .= "ii";
 
     $stmt = $database->prepare($sql);
     $stmt->bind_param($types, ...$params);
@@ -119,19 +174,23 @@ if ($status_filter === 'available') {
 // Normalize / trim payload to just what the front end needs to render rows.
 $out = array_map(function ($app) {
     return [
-        'id'              => (int) $app['id'],
-        'status'          => strtolower($app['status'] ?? 'unknown'),
-        'updated_at'      => $app['updated_at'],
-        'rsf_number'      => $app['rsf_number'],
-        'position_title'  => $app['position_title'],
-        'country'         => $app['country'],
-        'employer_name'   => $app['employer_name'],
-        'applicant_name'  => $app['applicant_name'],
-        'applicant_email' => $app['applicant_email'],
+        'id'                => (int) $app['id'],
+        'status'            => strtolower($app['status'] ?? 'unknown'),
+        'updated_at'        => $app['updated_at'],
+        'rsf_number'        => $app['rsf_number'],
+        'position_title'    => $app['position_title'],
+        'country'           => $app['country'],
+        'employer_name'     => $app['employer_name'],
+        'applicant_name'    => $app['applicant_name'],
+        'applicant_email'   => $app['applicant_email'],
+        'applicant_picture' => $app['applicant_picture'] ?? null,
     ];
 }, $applications);
 
 echo json_encode([
     'count'        => count($out),
+    'total'        => $total_filtered,
+    'page'         => $page,
+    'total_pages'  => $total_pages,
     'applications' => $out,
 ]);

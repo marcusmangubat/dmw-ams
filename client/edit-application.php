@@ -15,7 +15,7 @@ if (!isset($_SESSION['user_email']) || ($_SESSION['user_type'] ?? '') !== 'clien
 
 $client_email = $_SESSION['user_email'];
 $stmt = $database->prepare("
-    SELECT cid, CONCAT(first_name, ' ', last_name) AS full_name
+    SELECT cid, profile_picture, CONCAT(first_name, ' ', last_name) AS full_name
     FROM clients WHERE email = ? LIMIT 1
 ");
 $stmt->bind_param("s", $client_email);
@@ -27,7 +27,8 @@ if (!$client) {
     exit;
 }
 $client_id = (int) $client['cid'];
-
+$has_picture = !empty($client['profile_picture']);
+$picture_url = $has_picture ? '../' . $client['profile_picture'] : null;
 $app_id = (int) ($_GET['id'] ?? $_POST['application_id'] ?? 0);
 if (!$app_id) {
     header('Location: my-applications.php');
@@ -701,7 +702,13 @@ $page_title    = 'Application – ' . ($app['position_title'] ?? 'Edit');
         </div>
         <div class="topbar-right">
             <span class="topbar-date" id="live-date"></span>
-            <div class="topbar-avatar"><?= strtoupper(substr($client['full_name'] ?? 'U', 0, 2)) ?></div>
+            <div class="tb-btn">
+                <i class="fas fa-bell"></i>
+                <span class="notif-dot"></span>
+            </div>
+            <div class="topbar-avatar" <?= $has_picture ? "style=\"background-image:url('" . htmlspecialchars($picture_url) . "');background-size:cover;background-position:center;\"" : '' ?>>
+                <?= $has_picture ? '' : strtoupper(substr($client['full_name'] ?? 'U', 0, 2)) ?>
+            </div>
         </div>
     </header>
 
@@ -1026,14 +1033,32 @@ $page_title    = 'Application – ' . ($app['position_title'] ?? 'Edit');
     </div>
 
     <script>
-        document.getElementById('live-date').textContent =
-            new Date().toLocaleDateString('en-PH', {
+        /* ── Live date + time ────────────────────────────────────────────── */
+        function updateLiveDateTime() {
+            const el = document.getElementById('live-date');
+            if (!el) return;
+
+            const now = new Date();
+
+            const datePart = now.toLocaleDateString('en-PH', {
                 weekday: 'short',
                 year: 'numeric',
                 month: 'short',
                 day: 'numeric'
             }).toUpperCase();
 
+            const timePart = now.toLocaleTimeString('en-PH', {
+                hour: 'numeric',
+                minute: '2-digit',
+                second: '2-digit',
+                hour12: true
+            }).toLowerCase();
+
+            el.textContent = `${datePart} | ${timePart}`;
+        }
+
+        updateLiveDateTime();
+        setInterval(updateLiveDateTime, 1000); // refresh every second
         // Disable all inputs in non-editable forms
         (function() {
             document.querySelectorAll('.js-app-edit-form[data-editable="0"]').forEach(function(form) {

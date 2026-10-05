@@ -1,7 +1,5 @@
 <?php
-
 // Activated when user clicks invitation link → sets password and creates profile
-
 session_start();
 include 'db.php';
 date_default_timezone_set('Asia/Manila');
